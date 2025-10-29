@@ -1,0 +1,1 @@
+Note: Change the requirements.txt such that it forces the use of transformers==4.52.4 (same as what Colab is using now). A recent update from Huggingface (transformers>=4.53) breaks the backward compatibility.

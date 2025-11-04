@@ -107,17 +107,21 @@ class BaseLLM:
 
         # Set padding side to left for proper alignment during generation
         self.tokenizer.padding_side = "left"
-        
+
         # Tokenize all prompts with padding
         inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self.device)
-        
+
         # Set up generation parameters
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+
         generation_kwargs = {
             "max_new_tokens": 50,
             "eos_token_id": self.tokenizer.eos_token_id,
-            "pad_token_id": self.tokenizer.pad_token_id,
+            "pad_token_id": pad_token_id,
         }
-        
+
         # Handle sampling vs greedy decoding
         if temperature > 0:
             generation_kwargs.update({
@@ -136,13 +140,15 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                **generation_kwargs
+                **generation_kwargs,
             )
-        
-        # Decode only the generated tokens (exclude input tokens)
+
+        # Decode only the generated tokens (exclude input tokens). All prompts have been
+        # left padded to the same length, so slicing with the maximum input length works
+        # for each sequence individually.
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        
+
         # Decode the generated tokens
         if num_return_sequences is None:
             # Single generation per prompt

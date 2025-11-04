@@ -1,7 +1,12 @@
 from .base_llm import BaseLLM
+from .conversion_utils import apply_dataset_answer_patch
 
 
 class CoTModel(BaseLLM):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_dataset_answer_patch(self)
+
     def format_prompt(self, question: str) -> str:
         """
         Take a question and convert it into a chat template. The LLM will likely answer much

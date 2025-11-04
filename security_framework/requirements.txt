@@ -1,3 +1,0 @@
-python-nmap>=1.6.0
-dnspython>=2.4.0
-ipaddress>=1.0.23

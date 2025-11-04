@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import torch
 from peft import LoraConfig, PeftModel, get_peft_model
+from transformers import Trainer, TrainingArguments
 
 from .base_llm import BaseLLM
 from .conversion_utils import apply_dataset_answer_patch, format_numeric_answer
@@ -120,7 +122,55 @@ def train_model(
     **_: Any,
 ):
     model_path = _resolve_path(output_dir)
-    _ensure_adapter(model_path)
+    _ensure_adapter(model_path, rank=DEFAULT_LORA_RANK)
+    
+    # Load base model and create LoRA adapter
+    llm = BaseLLM()
+    config = LoraConfig(
+        task_type="CAUSAL_LM",
+        target_modules="all-linear",
+        bias="none",
+        r=DEFAULT_LORA_RANK,
+        lora_alpha=max(DEFAULT_LORA_RANK * 4, 4),
+        lora_dropout=0.0,
+    )
+    
+    lora_model = get_peft_model(llm.model, config)
+    
+    # Enable input require grads to avoid bug with gradient_checkpointing
+    if torch.cuda.is_available():
+        lora_model.enable_input_require_grads()
+    
+    # Create dataset
+    train_dataset = Dataset("train")
+    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=str(model_path),
+        logging_dir=str(model_path),
+        report_to="tensorboard",
+        gradient_checkpointing=True,
+        learning_rate=5e-4,
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
+        save_strategy="epoch",
+        logging_steps=10,
+    )
+    
+    # Create trainer
+    trainer = Trainer(
+        model=lora_model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+    )
+    
+    # Train
+    trainer.train()
+    
+    # Save model
+    trainer.save_model()
+    
     test_model(str(model_path))
 
 

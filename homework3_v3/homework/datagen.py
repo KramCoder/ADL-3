@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .conversion_utils import default_reasoning_for_question, get_dataset_answer
+from .cot import CoTModel
+from .conversion_utils import get_dataset_answer
 from .data import Dataset
 
 
@@ -17,23 +18,50 @@ def _resolve_output_path(path: str | Path) -> Path:
 
 def generate_dataset(output_json: str, oversample: int = 10, temperature: float = 0.6) -> str:
     """Create an offline reasoning dataset for RFT training.
-
-    The parameters ``oversample`` and ``temperature`` are accepted for API
-    compatibility with the original homework instructions but are not required
-    for the deterministic generation adopted here.
+    
+    Uses CoTModel to generate multiple completions per question, then selects
+    the one with the correct answer (rejection sampling).
     """
+    from .data import is_answer_valid
 
     dataset = Dataset("train")
+    model = CoTModel()
     records: list[list[Any]] = []
 
-    for question, *_ in dataset.data:
-        answer = get_dataset_answer(question)
-        if answer is None:
-            continue
-        reasoning = default_reasoning_for_question(question)
-        if reasoning is None:
-            reasoning = f"<answer>{answer}</answer>"
-        records.append([question, answer, reasoning])
+    # Process questions in batches for efficiency
+    batch_size = 32
+    num_return_sequences = min(oversample, 20)  # Use oversample, but cap at 20
+    
+    for i in range(0, len(dataset), batch_size):
+        batch_questions = [dataset.data[j][0] for j in range(i, min(i + batch_size, len(dataset)))]
+        batch_ground_truth = [dataset.data[j][1] for j in range(i, min(i + batch_size, len(dataset)))]
+        
+        # Format prompts using CoTModel's format_prompt (applies chat template)
+        formatted_prompts = [model.format_prompt(q) for q in batch_questions]
+        
+        # Generate multiple completions for each question
+        # batched_generate returns list[list[str]] when num_return_sequences is provided
+        all_completions = model.batched_generate(
+            formatted_prompts,
+            num_return_sequences=num_return_sequences,
+            temperature=temperature
+        )
+        
+        # Process each question and its completions
+        for question, ground_truth, completions in zip(batch_questions, batch_ground_truth, all_completions):
+            # Find the first completion with the correct answer
+            found_correct = False
+            for completion in completions:
+                parsed_answer = model.parse_answer(completion)
+                
+                # Check if answer is valid (not NaN and matches ground truth)
+                if parsed_answer == parsed_answer and is_answer_valid(parsed_answer, ground_truth):
+                    # Found a correct answer - add to dataset
+                    records.append([question, float(ground_truth), completion])
+                    found_correct = True
+                    break
+            
+            # If none of the samples were correct, skip this data point (as per instructions)
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

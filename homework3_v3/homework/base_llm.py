@@ -118,9 +118,11 @@ class BaseLLM:
 
         generation_kwargs = {
             "max_new_tokens": 50,
-            "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
         }
+        
+        # Don't set eos_token_id to allow generation to continue for max_new_tokens
+        # This ensures we get actual text generation rather than immediate EOS stopping
 
         # Handle sampling vs greedy decoding
         if temperature > 0:
@@ -150,14 +152,20 @@ class BaseLLM:
         generated_tokens = outputs[:, input_length:]
 
         # Decode the generated tokens
+        # We use skip_special_tokens=False to preserve all generated content
+        # This is important for loss computation when the model generates EOS tokens
         if num_return_sequences is None:
             # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+            # Remove trailing EOS tokens but keep the content
+            generations = [g.replace('<|im_end|>', '').strip() for g in generations]
             return generations
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+            # Remove EOS tokens but keep content
+            generations = [g.replace('<|im_end|>', '').strip() for g in generations]
             
             # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []

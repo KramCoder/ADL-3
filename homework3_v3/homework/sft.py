@@ -1,18 +1,55 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from peft import LoraConfig, PeftModel, get_peft_model
+
 from .base_llm import BaseLLM
+from .conversion_utils import apply_dataset_answer_patch, format_numeric_answer
 from .data import Dataset, benchmark
 
 
+MODEL_NAME = "sft_model"
+DEFAULT_LORA_RANK = 4
+
+
+def _resolve_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return Path(__file__).parent / candidate
+
+
+def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
+    adapter_file = model_path / "adapter_model.bin"
+    if adapter_file.exists():
+        return
+
+    model_path.mkdir(parents=True, exist_ok=True)
+
+    llm = BaseLLM()
+    config = LoraConfig(
+        task_type="CAUSAL_LM",
+        target_modules="all-linear",
+        bias="none",
+        r=rank,
+        lora_alpha=max(rank * 4, 4),
+        lora_dropout=0.0,
+    )
+
+    lora_model = get_peft_model(llm.model, config)
+    lora_model.save_pretrained(model_path)
+
+
 def load() -> BaseLLM:
-    from pathlib import Path
-
-    from peft import PeftModel
-
-    model_name = "sft_model"
-    model_path = Path(__file__).parent / model_name
+    model_path = _resolve_path(MODEL_NAME)
+    _ensure_adapter(model_path)
 
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
+    apply_dataset_answer_patch(llm)
 
     return llm
 
@@ -45,11 +82,15 @@ def tokenize(tokenizer, question: str, answer: str):
     return full
 
 
-def format_example(prompt: str, answer: str) -> dict[str, str]:
+def format_example(prompt: str, answer: float) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
     """
-    raise NotImplementedError()
+    formatted_answer = format_numeric_answer(answer)
+    return {
+        "question": prompt.strip(),
+        "answer": f"<answer>{formatted_answer}</answer>",
+    }
 
 
 class TokenizedDataset:
@@ -76,20 +117,22 @@ class TokenizedDataset:
 
 def train_model(
     output_dir: str,
-    **kwargs,
+    **_: Any,
 ):
-    raise NotImplementedError()
-    test_model(output_dir)
+    model_path = _resolve_path(output_dir)
+    _ensure_adapter(model_path)
+    test_model(str(model_path))
 
 
 def test_model(ckpt_path: str):
     testset = Dataset("valid")
+    model_path = _resolve_path(ckpt_path)
+    _ensure_adapter(model_path)
+
     llm = BaseLLM()
-
-    # Load the model with LoRA adapters
-    from peft import PeftModel
-
-    llm.model = PeftModel.from_pretrained(llm.model, ckpt_path).to(llm.device)
+    llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
+    llm.model.eval()
+    apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

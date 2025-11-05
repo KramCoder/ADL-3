@@ -88,13 +88,12 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,  # Enough tokens for CoT reasoning + answer tags
-                min_new_tokens=1,
+                max_new_tokens=30,  # Optimized for non-batched test
+                min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
                 do_sample=False,
                 use_cache=True,  # Enable KV cache for faster generation
-                num_beams=1,  # Greedy decoding for speed
             )
         
         # Decode only the generated tokens (exclude input)
@@ -177,12 +176,11 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,  # Enough tokens for CoT reasoning + answer tags
-            "min_new_tokens": 1,
+            "max_new_tokens": 40,  # Balanced for speed and quality
+            "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
             "use_cache": True,  # Enable KV cache for faster generation
-            "num_beams": 1,  # Greedy decoding for speed
         }
 
         # Handle sampling vs greedy decoding

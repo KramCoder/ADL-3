@@ -5,7 +5,7 @@ from .conversion_utils import apply_dataset_answer_patch
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        apply_dataset_answer_patch(self)
+        # Removed apply_dataset_answer_patch to actually test the LLM
 
     def format_prompt(self, question: str) -> str:
         """
@@ -18,14 +18,13 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You are a friendly unit-conversion tutor."
-                    " Solve the user question by explaining the conversion briefly,"
-                    " then give the numeric result inside <answer> tags. Be concise."
+                    "You solve unit conversions step by step. "
+                    "State the conversion factor, calculate, then give the answer in <answer></answer> tags."
                 ),
             },
             {
                 "role": "user",
-                "content": "Question: How many gram are there per 6 kg?",
+                "content": "How many gram are there per 6 kg?",
             },
             {
                 "role": "assistant",
@@ -33,7 +32,15 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "user",
-                "content": f"Question: {question}",
+                "content": "What is the conversion of 2 hour to seconds?",
+            },
+            {
+                "role": "assistant",
+                "content": "1 hour = 3600 s, so 2 * 3600 = 7200. <answer>7200</answer>",
+            },
+            {
+                "role": "user",
+                "content": question,
             },
         ]
 

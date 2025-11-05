@@ -88,7 +88,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=100,  # Enough tokens for CoT reasoning + answer tags
+                max_new_tokens=50,  # Enough tokens for CoT reasoning + answer tags
                 min_new_tokens=1,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -177,7 +177,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 100,  # Enough tokens for CoT reasoning + answer tags
+            "max_new_tokens": 50,  # Enough tokens for CoT reasoning + answer tags
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,

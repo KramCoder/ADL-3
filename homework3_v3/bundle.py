@@ -2,7 +2,7 @@ import argparse
 import zipfile
 from pathlib import Path
 
-BLACKLIST = ["__pycache__", ".pyc", ".ipynb"]
+BLACKLIST = ["__pycache__", ".pyc", ".ipynb", "grader", "bundle.py", "submission.zip", "README.md"]
 MAXSIZE_MB = 40
 
 

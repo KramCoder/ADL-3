@@ -50,12 +50,8 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Format prompt with chat template for instruct model
-        formatted_prompt = self.tokenizer.apply_chat_template(
-            [{'role': 'user', 'content': prompt}],
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        # Use format_prompt to handle prompt formatting
+        formatted_prompt = self.format_prompt(prompt)
         
         # Tokenize the formatted prompt
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
@@ -70,7 +66,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=28,  # Optimized for consistent speed
+                max_new_tokens=50,  # Sufficient for unit conversion answers
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
                 do_sample=False,
@@ -142,15 +138,8 @@ class BaseLLM:
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
             ]
 
-        # Format all prompts with chat template for instruct model
-        formatted_prompts = [
-            self.tokenizer.apply_chat_template(
-                [{'role': 'user', 'content': prompt}],
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            for prompt in prompts
-        ]
+        # Use format_prompt to handle prompt formatting for each prompt
+        formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
         
         # Set padding side to left for proper alignment during generation
         self.tokenizer.padding_side = "left"
@@ -164,7 +153,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 28,  # Optimized for consistent speed
+            "max_new_tokens": 50,  # Sufficient for unit conversion answers
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
             "use_cache": True,  # Enable KV cache for faster generation

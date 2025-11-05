@@ -45,8 +45,8 @@ class BaseLLM:
         """
         # Optimized single-prompt generation - no padding needed
         inputs = self.tokenizer(prompt, return_tensors="pt")
-        input_ids = inputs["input_ids"].to(self.device)
-        attention_mask = inputs["attention_mask"].to(self.device)
+        input_ids = inputs["input_ids"].to(self.device, non_blocking=True)
+        attention_mask = inputs["attention_mask"].to(self.device, non_blocking=True)
         
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -57,9 +57,10 @@ class BaseLLM:
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
             "do_sample": False,
+            "use_cache": True,
         }
         
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -120,7 +121,8 @@ class BaseLLM:
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
         # If you run out of memory, try to reduce the micro_batch_size.
-        micro_batch_size = 32
+        # Use larger batch size for better GPU utilization (64 is typically safe)
+        micro_batch_size = 64
         if len(prompts) > micro_batch_size:
             # Process in micro-batches without tqdm to reduce overhead
             results = []
@@ -139,8 +141,8 @@ class BaseLLM:
 
         # Tokenize all prompts with padding
         inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
-        input_ids = inputs["input_ids"].to(self.device)
-        attention_mask = inputs["attention_mask"].to(self.device)
+        input_ids = inputs["input_ids"].to(self.device, non_blocking=True)
+        attention_mask = inputs["attention_mask"].to(self.device, non_blocking=True)
 
         # Set up generation parameters
         pad_token_id = self.tokenizer.pad_token_id
@@ -151,6 +153,7 @@ class BaseLLM:
             "max_new_tokens": 50,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
+            "use_cache": True,
         }
 
         # Handle sampling vs greedy decoding
@@ -167,7 +170,7 @@ class BaseLLM:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         
         # Generate responses
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,

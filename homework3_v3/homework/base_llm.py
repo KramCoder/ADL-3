@@ -88,13 +88,10 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,  # Enough tokens for CoT reasoning + answer tags
-                min_new_tokens=1,
+                max_new_tokens=50,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
                 do_sample=False,
-                use_cache=True,  # Enable KV cache for faster generation
-                num_beams=1,  # Greedy decoding for speed
             )
         
         # Decode only the generated tokens (exclude input)
@@ -177,22 +174,15 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,  # Enough tokens for CoT reasoning + answer tags
-            "min_new_tokens": 1,
+            "max_new_tokens": 50,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
-            "use_cache": True,  # Enable KV cache for faster generation
-            "num_beams": 1,  # Greedy decoding for speed
+            "do_sample": False if temperature == 0 else True,
         }
 
         # Handle sampling vs greedy decoding
         if temperature > 0:
-            generation_kwargs.update({
-                "do_sample": True,
-                "temperature": temperature,
-            })
-        else:
-            generation_kwargs["do_sample"] = False
+            generation_kwargs["temperature"] = temperature
             
         # Handle multiple return sequences
         if num_return_sequences is not None:

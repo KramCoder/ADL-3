@@ -13,7 +13,13 @@ class BaseLLM:
     def __init__(self, checkpoint=checkpoint):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
+        self.model.eval()  # Set model to evaluation mode for better performance
         self.device = device
+        
+        # Warm up the model with a dummy generation to ensure consistent performance
+        with torch.inference_mode():
+            dummy_input = self.tokenizer("test", return_tensors="pt").to(device)
+            _ = self.model.generate(**dummy_input, max_new_tokens=1)
 
     def format_prompt(self, question: str) -> str:
         """
@@ -44,23 +50,31 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Tokenize the single prompt
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        # Format prompt with chat template for instruct model
+        formatted_prompt = self.tokenizer.apply_chat_template(
+            [{'role': 'user', 'content': prompt}],
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize the formatted prompt
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
         
         # Set up pad token
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id
         
-        # Generate with no gradient computation for speed
-        with torch.no_grad():
+        # Generate with inference mode for maximum speed
+        with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,
+                max_new_tokens=28,  # Optimized for consistent speed
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
                 do_sample=False,
+                use_cache=True,  # Enable KV cache for faster generation
             )
         
         # Decode only the generated tokens (exclude input)
@@ -128,11 +142,21 @@ class BaseLLM:
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
             ]
 
+        # Format all prompts with chat template for instruct model
+        formatted_prompts = [
+            self.tokenizer.apply_chat_template(
+                [{'role': 'user', 'content': prompt}],
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            for prompt in prompts
+        ]
+        
         # Set padding side to left for proper alignment during generation
         self.tokenizer.padding_side = "left"
 
-        # Tokenize all prompts with padding
-        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self.device)
+        # Tokenize all formatted prompts with padding
+        inputs = self.tokenizer(formatted_prompts, padding=True, return_tensors="pt").to(self.device)
 
         # Set up generation parameters
         pad_token_id = self.tokenizer.pad_token_id
@@ -140,9 +164,10 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,
+            "max_new_tokens": 28,  # Optimized for consistent speed
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
+            "use_cache": True,  # Enable KV cache for faster generation
         }
 
         # Handle sampling vs greedy decoding
@@ -158,8 +183,8 @@ class BaseLLM:
         if num_return_sequences is not None:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         
-        # Generate responses
-        with torch.no_grad():
+        # Generate responses with inference mode for maximum speed
+        with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],

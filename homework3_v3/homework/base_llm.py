@@ -12,14 +12,36 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 class BaseLLM:
     def __init__(self, checkpoint=checkpoint):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-        self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
+        
+        # Load model with optimizations
+        load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+        if device == "cuda":
+            # Use memory-efficient attention if available
+            load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
+        
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(checkpoint, **load_kwargs).to(device)
+        except Exception:
+            # Fallback if sdpa not available
+            load_kwargs.pop("attn_implementation", None)
+            self.model = AutoModelForCausalLM.from_pretrained(checkpoint, **load_kwargs).to(device)
+        
         self.model.eval()  # Set model to evaluation mode for better performance
         self.device = device
+        
+        # Set up pad token if not present
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Additional optimizations for faster inference
+        if device == "cuda":
+            # Enable cudnn benchmarking for faster inference
+            torch.backends.cudnn.benchmark = True
         
         # Warm up the model with a dummy generation to ensure consistent performance
         with torch.inference_mode():
             dummy_input = self.tokenizer("test", return_tensors="pt").to(device)
-            _ = self.model.generate(**dummy_input, max_new_tokens=1)
+            _ = self.model.generate(**dummy_input, max_new_tokens=1, do_sample=False)
 
     def format_prompt(self, question: str) -> str:
         """
@@ -66,11 +88,13 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,  # Sufficient for unit conversion answers
+                max_new_tokens=20,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
+                min_new_tokens=1,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
                 do_sample=False,
                 use_cache=True,  # Enable KV cache for faster generation
+                num_beams=1,  # Greedy decoding for speed
             )
         
         # Decode only the generated tokens (exclude input)
@@ -153,10 +177,12 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,  # Sufficient for unit conversion answers
+            "max_new_tokens": 20,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
+            "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
             "use_cache": True,  # Enable KV cache for faster generation
+            "num_beams": 1,  # Greedy decoding for speed
         }
 
         # Handle sampling vs greedy decoding

@@ -2,6 +2,7 @@ import builtins
 import inspect
 import logging
 import sys
+import threading
 import time
 import traceback
 
@@ -61,11 +62,33 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
         for a in list_all_kwargs(**kwargs):
             try:
                 tick = time.time()
-                v = func(self, **a)
+                timeout_seconds = timeout / 1000.0
+                
+                # Use threading to enforce timeout
+                result = [None]
+                exception = [None]
+                
+                def target():
+                    try:
+                        result[0] = func(self, **a)
+                    except Exception as e:
+                        exception[0] = e
+                
+                thread = threading.Thread(target=target)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=timeout_seconds)
+                
                 elapsed = time.time() - tick
-
-                if elapsed > timeout / 1000:
+                
+                if thread.is_alive():
+                    # Thread is still running, timeout occurred
                     raise TimeoutError(f"Timeout after {elapsed:.2f} s")
+                
+                if exception[0] is not None:
+                    raise exception[0]
+                
+                v = result[0]
 
                 if v is None:
                     v = 1

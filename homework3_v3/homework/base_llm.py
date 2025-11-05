@@ -14,7 +14,7 @@ class BaseLLM:
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         
         # Load model with optimizations
-        load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+        load_kwargs = {"dtype": torch.float16 if device == "cuda" else torch.float32}
         if device == "cuda":
             # Use memory-efficient attention if available
             load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
@@ -88,7 +88,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=20,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
+                max_new_tokens=10,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
                 min_new_tokens=1,
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -166,6 +166,7 @@ class BaseLLM:
         formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
         
         # Set padding side to left for proper alignment during generation
+        original_padding_side = self.tokenizer.padding_side
         self.tokenizer.padding_side = "left"
 
         # Tokenize all formatted prompts with padding
@@ -177,7 +178,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 20,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
+            "max_new_tokens": 10,  # Short answers for unit conversion (e.g., "<answer>6000</answer>")
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -211,6 +212,9 @@ class BaseLLM:
         # for each sequence individually.
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
+
+        # Restore original padding side
+        self.tokenizer.padding_side = original_padding_side
 
         # Decode the generated tokens
         if num_return_sequences is None:

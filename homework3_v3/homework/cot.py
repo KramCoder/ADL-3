@@ -18,22 +18,38 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You are a friendly unit-conversion tutor."
-                    " Solve the user question by explaining the conversion briefly,"
-                    " then give the numeric result inside <answer> tags. Be concise."
+                    "You are a helpful unit conversion assistant. You solve unit conversion problems step by step. "
+                    "First, identify the conversion factor, then perform the calculation, and finally provide the "
+                    "numeric answer inside <answer></answer> tags. Be concise and precise."
                 ),
             },
             {
                 "role": "user",
-                "content": "Question: How many gram are there per 6 kg?",
+                "content": "How many gram are there per 6 kg?",
             },
             {
                 "role": "assistant",
-                "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
+                "content": "Use 1 kg = 1000 g. So 6 kg = 6 * 1000 = 6000 g. <answer>6000</answer>",
             },
             {
                 "role": "user",
-                "content": f"Question: {question}",
+                "content": "What is the conversion of 2 hour to seconds?",
+            },
+            {
+                "role": "assistant",
+                "content": "Use 1 hour = 3600 seconds. So 2 hours = 2 * 3600 = 7200 seconds. <answer>7200</answer>",
+            },
+            {
+                "role": "user",
+                "content": "Convert 5 km to meter?",
+            },
+            {
+                "role": "assistant",
+                "content": "Use 1 km = 1000 m. So 5 km = 5 * 1000 = 5000 m. <answer>5000</answer>",
+            },
+            {
+                "role": "user",
+                "content": question,
             },
         ]
 

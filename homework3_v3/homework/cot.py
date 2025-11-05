@@ -18,9 +18,9 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You are a friendly unit-conversion tutor."
-                    " Solve the user question by explaining the conversion briefly,"
-                    " then give the numeric result inside <answer> tags. Be concise."
+                    "You are a helpful unit conversion assistant. "
+                    "Solve unit conversion questions by showing your work briefly, "
+                    "then provide the numeric answer inside <answer> tags. Be concise."
                 ),
             },
             {
@@ -29,7 +29,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
+                "content": "1 kg = 1000 g, so 6 kg = 6 × 1000 = 6000 g. <answer>6000</answer>",
             },
             {
                 "role": "user",

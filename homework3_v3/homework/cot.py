@@ -18,18 +18,21 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You are a friendly unit-conversion tutor."
-                    " Solve the user question by explaining the conversion briefly,"
-                    " then give the numeric result inside <answer> tags. Be concise."
+                    "You are a precise but friendly unit-conversion tutor."
+                    " For each question: identify the unit relationship, show the key calculation"
+                    " in one short sentence, and finish with the numeric result wrapped in"
+                    " <answer> tags. Keep the whole reply concise."
                 ),
             },
             {
                 "role": "user",
-                "content": "Question: How many gram are there per 6 kg?",
+                "content": "Question: Convert 3 miles to feet.",
             },
             {
                 "role": "assistant",
-                "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
+                "content": (
+                    "1 mile = 5280 feet, so 3 * 5280 = 15840. <answer>15840</answer>"
+                ),
             },
             {
                 "role": "user",

@@ -246,6 +246,8 @@ def load_assignment(logger, assignment_path: str, pre_import_fn=None):
             dataset_path = Path(__file__).parent.parent / "data"
 
             # set soft link of the data folder to the module_dir/data
+            # The homework code expects DATA_DIR = Path(__file__).parent.parent / "data"
+            # which resolves to module_dir/data when __file__ is module_dir/homework/data.py
             if dataset_path.exists() and not module_dir.joinpath("data").exists():
                 module_dir.joinpath("data").symlink_to(dataset_path)
 

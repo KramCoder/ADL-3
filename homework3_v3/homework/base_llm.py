@@ -1,12 +1,43 @@
 from typing import overload
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 from tqdm import tqdm
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+class _StopOnSubsequence(StoppingCriteria):
+    """Stop generation once each sequence ends with the provided ids."""
+
+    def __init__(self, stop_sequence: list[int]):
+        super().__init__()
+        self.stop_sequence = torch.tensor(stop_sequence, dtype=torch.long)
+        self._finished: set[int] = set()
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        if self.stop_sequence.numel() == 0:
+            return False
+
+        if self.stop_sequence.device != input_ids.device:
+            self.stop_sequence = self.stop_sequence.to(input_ids.device)
+
+        stop_len = self.stop_sequence.size(0)
+        batch_size = input_ids.size(0)
+
+        if input_ids.size(1) < stop_len:
+            return False
+
+        for batch_idx in range(batch_size):
+            if batch_idx in self._finished:
+                continue
+            sequence = input_ids[batch_idx]
+            if torch.equal(sequence[-stop_len:], self.stop_sequence):
+                self._finished.add(batch_idx)
+
+        return len(self._finished) == batch_size
 
 
 class BaseLLM:
@@ -32,6 +63,9 @@ class BaseLLM:
         # Set up pad token if not present
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Cache token ids that mark the end of a valid answer
+        self._answer_end_ids = self.tokenizer.encode("</answer>", add_special_tokens=False)
         
         # Additional optimizations for faster inference
         if device == "cuda":
@@ -72,37 +106,7 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Use format_prompt to handle prompt formatting
-        formatted_prompt = self.format_prompt(prompt)
-        
-        # Tokenize the formatted prompt
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
-        
-        # Set up pad token
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id
-        
-        # Generate with inference mode for maximum speed
-        with torch.inference_mode():
-            outputs = self.model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,  # Enough tokens for CoT reasoning + answer tags
-                min_new_tokens=1,
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=pad_token_id,
-                do_sample=False,
-                use_cache=True,  # Enable KV cache for faster generation
-                num_beams=1,  # Greedy decoding for speed
-            )
-        
-        # Decode only the generated tokens (exclude input)
-        input_length = inputs["input_ids"].shape[1]
-        generated_tokens = outputs[0, input_length:]
-        
-        # Decode and return
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return self.batched_generate([prompt])[0]
 
     @overload
     def batched_generate(
@@ -164,12 +168,17 @@ class BaseLLM:
 
         # Use format_prompt to handle prompt formatting for each prompt
         formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
-        
-        # Set padding side to left for proper alignment during generation
-        self.tokenizer.padding_side = "left"
 
-        # Tokenize all formatted prompts with padding
-        inputs = self.tokenizer(formatted_prompts, padding=True, return_tensors="pt").to(self.device)
+        original_padding_side = self.tokenizer.padding_side
+        try:
+            # Set padding side to left for proper alignment during generation
+            self.tokenizer.padding_side = "left"
+
+            # Tokenize all formatted prompts with padding
+            inputs = self.tokenizer(formatted_prompts, padding=True, return_tensors="pt").to(self.device)
+        finally:
+            # Restore previous padding behaviour so downstream callers are unaffected
+            self.tokenizer.padding_side = original_padding_side
 
         # Set up generation parameters
         pad_token_id = self.tokenizer.pad_token_id
@@ -177,7 +186,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,  # Enough tokens for CoT reasoning + answer tags
+            "max_new_tokens": 64,  # Enough tokens for brief reasoning + answer tags
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -197,7 +206,12 @@ class BaseLLM:
         # Handle multiple return sequences
         if num_return_sequences is not None:
             generation_kwargs["num_return_sequences"] = num_return_sequences
-        
+
+        if self._answer_end_ids:
+            generation_kwargs["stopping_criteria"] = StoppingCriteriaList([
+                _StopOnSubsequence(self._answer_end_ids)
+            ])
+
         # Generate responses with inference mode for maximum speed
         with torch.inference_mode():
             outputs = self.model.generate(
@@ -212,23 +226,22 @@ class BaseLLM:
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
 
+        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        trimmed = [self._trim_after_answer(text) for text in decoded]
+
         # Decode the generated tokens
         if num_return_sequences is None:
             # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            return generations
+            return trimmed
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            
-            # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []
             for i in range(batch_size):
                 start_idx = i * num_return_sequences
                 end_idx = start_idx + num_return_sequences
-                reshaped_generations.append(generations[start_idx:end_idx])
-            
+                reshaped_generations.append(trimmed[start_idx:end_idx])
+
             return reshaped_generations
 
     def answer(self, *questions) -> list[float]:
@@ -238,6 +251,14 @@ class BaseLLM:
         # Pass questions directly - batched_generate will format them
         generations = self.batched_generate(list(questions))
         return [self.parse_answer(g) for g in generations]
+
+    @staticmethod
+    def _trim_after_answer(text: str) -> str:
+        end_tag = "</answer>"
+        idx = text.find(end_tag)
+        if idx == -1:
+            return text.strip()
+        return (text[: idx + len(end_tag)]).strip()
 
 
 def test_model():

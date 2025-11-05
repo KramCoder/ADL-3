@@ -1,12 +1,29 @@
 from typing import overload
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 from tqdm import tqdm
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+class StopOnTokenSequence(StoppingCriteria):
+    def __init__(self, sequence: torch.Tensor):
+        super().__init__()
+        if sequence.ndim != 1:
+            raise ValueError("Stop sequence tensor must be 1-dimensional")
+        self.sequence = sequence
+        self.sequence_length = sequence.numel()
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        if self.sequence_length == 0 or input_ids.shape[1] < self.sequence_length:
+            return False
+
+        target = self.sequence.to(input_ids.device)
+        recent_tokens = input_ids[:, -self.sequence_length :]
+        return bool(torch.any(torch.all(recent_tokens == target.unsqueeze(0), dim=-1)))
 
 
 class BaseLLM:
@@ -15,11 +32,29 @@ class BaseLLM:
         self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
         self.model.eval()  # Set model to evaluation mode for better performance
         self.device = device
-        
+
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+        self.max_new_tokens = 16
+
+        stop_sequence = torch.tensor(
+            self.tokenizer.encode("</answer>", add_special_tokens=False), dtype=torch.long
+        )
+        self._stop_sequence = stop_sequence
+
         # Warm up the model with a dummy generation to ensure consistent performance
         with torch.inference_mode():
-            dummy_input = self.tokenizer("test", return_tensors="pt").to(device)
-            _ = self.model.generate(**dummy_input, max_new_tokens=1)
+            dummy_messages = self.format_prompt("1+1")
+            dummy_prompt = self._render_prompt(dummy_messages)
+            dummy_input = self.tokenizer(dummy_prompt, return_tensors="pt").to(device)
+            _ = self.model.generate(
+                **dummy_input,
+                max_new_tokens=1,
+                pad_token_id=self.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
 
     def format_prompt(self, question: str) -> str:
         """
@@ -27,7 +62,50 @@ class BaseLLM:
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
         You don't need to change this function for now.
         """
-        return question
+        question = question.strip()
+        system_message = (
+            "You are a precise unit conversion assistant."
+            " Return the numeric result using <answer> and </answer> tags without extra text."
+        )
+
+        return [
+            {"role": "system", "content": system_message},
+            {
+                "role": "user",
+                "content": (
+                    f"{question}\n\nRespond only with the converted value inside <answer></answer> tags."
+                ),
+            },
+        ]
+
+    def _render_prompt(self, prompt):
+        if isinstance(prompt, str):
+            return prompt
+        if isinstance(prompt, list):
+            return self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        raise TypeError("Prompt must be a string or a list of chat messages")
+
+    def _build_generation_kwargs(self, *, num_return_sequences: int | None, temperature: float) -> dict:
+        generation_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.pad_token_id,
+            "use_cache": True,
+            "return_dict_in_generate": False,
+            "stopping_criteria": StoppingCriteriaList(
+                [StopOnTokenSequence(self._stop_sequence)]
+            ),
+        }
+
+        if temperature and temperature > 0:
+            generation_kwargs.update({"do_sample": True, "temperature": temperature})
+        else:
+            generation_kwargs["do_sample"] = False
+
+        if num_return_sequences is not None:
+            generation_kwargs["num_return_sequences"] = num_return_sequences
+
+        return generation_kwargs
 
     def parse_answer(self, answer: str) -> float:
         """
@@ -50,39 +128,21 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Format prompt with chat template for instruct model
-        formatted_prompt = self.tokenizer.apply_chat_template(
-            [{'role': 'user', 'content': prompt}],
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        
-        # Tokenize the formatted prompt
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
-        
-        # Set up pad token
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id
-        
-        # Generate with inference mode for maximum speed
+        rendered_prompt = self._render_prompt(self.format_prompt(prompt))
+        inputs = self.tokenizer(rendered_prompt, return_tensors="pt").to(self.device)
+
         with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=28,  # Optimized for consistent speed
-                eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=pad_token_id,
-                do_sample=False,
-                use_cache=True,  # Enable KV cache for faster generation
+                **self._build_generation_kwargs(num_return_sequences=None, temperature=0.0),
             )
-        
+
         # Decode only the generated tokens (exclude input)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[0, input_length:]
-        
-        # Decode and return
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
     @overload
     def batched_generate(
@@ -142,48 +202,17 @@ class BaseLLM:
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
             ]
 
-        # Format all prompts with chat template for instruct model
-        formatted_prompts = [
-            self.tokenizer.apply_chat_template(
-                [{'role': 'user', 'content': prompt}],
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            for prompt in prompts
-        ]
-        
-        # Set padding side to left for proper alignment during generation
+        formatted_prompts = [self._render_prompt(self.format_prompt(prompt)) for prompt in prompts]
+
+        previous_padding_side = self.tokenizer.padding_side
         self.tokenizer.padding_side = "left"
 
-        # Tokenize all formatted prompts with padding
         inputs = self.tokenizer(formatted_prompts, padding=True, return_tensors="pt").to(self.device)
 
-        # Set up generation parameters
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id
+        generation_kwargs = self._build_generation_kwargs(
+            num_return_sequences=num_return_sequences, temperature=temperature
+        )
 
-        generation_kwargs = {
-            "max_new_tokens": 28,  # Optimized for consistent speed
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "pad_token_id": pad_token_id,
-            "use_cache": True,  # Enable KV cache for faster generation
-        }
-
-        # Handle sampling vs greedy decoding
-        if temperature > 0:
-            generation_kwargs.update({
-                "do_sample": True,
-                "temperature": temperature,
-            })
-        else:
-            generation_kwargs["do_sample"] = False
-            
-        # Handle multiple return sequences
-        if num_return_sequences is not None:
-            generation_kwargs["num_return_sequences"] = num_return_sequences
-        
-        # Generate responses with inference mode for maximum speed
         with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
@@ -191,30 +220,26 @@ class BaseLLM:
                 **generation_kwargs,
             )
 
-        # Decode only the generated tokens (exclude input tokens). All prompts have been
-        # left padded to the same length, so slicing with the maximum input length works
-        # for each sequence individually.
+        self.tokenizer.padding_side = previous_padding_side
+
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
 
-        # Decode the generated tokens
+        generations = [
+            text.strip() for text in self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        ]
+
         if num_return_sequences is None:
-            # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             return generations
-        else:
-            # Multiple generations per prompt - reshape the output
-            batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            
-            # Reshape to [batch_size, num_return_sequences]
-            reshaped_generations = []
-            for i in range(batch_size):
-                start_idx = i * num_return_sequences
-                end_idx = start_idx + num_return_sequences
-                reshaped_generations.append(generations[start_idx:end_idx])
-            
-            return reshaped_generations
+
+        batch_size = len(prompts)
+        reshaped_generations = []
+        for i in range(batch_size):
+            start_idx = i * num_return_sequences
+            end_idx = start_idx + num_return_sequences
+            reshaped_generations.append(generations[start_idx:end_idx])
+
+        return reshaped_generations
 
     def answer(self, *questions) -> list[float]:
         """

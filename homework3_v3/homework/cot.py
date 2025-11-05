@@ -18,9 +18,8 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You are a helpful unit conversion assistant. You solve unit conversion problems step by step. "
-                    "First, identify the conversion factor, then perform the calculation, and finally provide the "
-                    "numeric answer inside <answer></answer> tags. Be concise and precise."
+                    "You solve unit conversions step by step. "
+                    "State the conversion factor, calculate, then give the answer in <answer></answer> tags."
                 ),
             },
             {
@@ -29,7 +28,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "Use 1 kg = 1000 g. So 6 kg = 6 * 1000 = 6000 g. <answer>6000</answer>",
+                "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
             },
             {
                 "role": "user",
@@ -37,15 +36,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "Use 1 hour = 3600 seconds. So 2 hours = 2 * 3600 = 7200 seconds. <answer>7200</answer>",
-            },
-            {
-                "role": "user",
-                "content": "Convert 5 km to meter?",
-            },
-            {
-                "role": "assistant",
-                "content": "Use 1 km = 1000 m. So 5 km = 5 * 1000 = 5000 m. <answer>5000</answer>",
+                "content": "1 hour = 3600 s, so 2 * 3600 = 7200. <answer>7200</answer>",
             },
             {
                 "role": "user",

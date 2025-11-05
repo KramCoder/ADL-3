@@ -235,9 +235,8 @@ class BaseLLM:
         """
         Answer questions given as individual string arguments.
         """
-        # Convert each question
-        prompts = [self.format_prompt(q) for q in questions]
-        generations = self.batched_generate(prompts)
+        # Pass questions directly - batched_generate will format them
+        generations = self.batched_generate(list(questions))
         return [self.parse_answer(g) for g in generations]
 
 

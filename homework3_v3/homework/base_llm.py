@@ -2,6 +2,7 @@ from typing import overload
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from tqdm import tqdm
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
@@ -43,7 +44,31 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        return self.batched_generate([prompt])[0]
+        # Tokenize the single prompt
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        
+        # Set up pad token
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        
+        # Generate with no gradient computation for speed
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=50,
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=pad_token_id,
+                do_sample=False,
+            )
+        
+        # Decode only the generated tokens (exclude input)
+        input_length = inputs["input_ids"].shape[1]
+        generated_tokens = outputs[0, input_length:]
+        
+        # Decode and return
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
     @overload
     def batched_generate(
@@ -90,8 +115,6 @@ class BaseLLM:
         Pro Tip: Only batch_decode generated tokens by masking out the inputs with
                  outputs[:, len(inputs["input_ids"][0]) :]
         """
-        from tqdm import tqdm  # Importing tqdm for progress bar
-
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
         # If you run out of memory, try to reduce the micro_batch_size.

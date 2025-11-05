@@ -43,7 +43,34 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        return self.batched_generate([prompt])[0]
+        # Optimized single-prompt generation - no padding needed
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device)
+        
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        
+        generation_kwargs = {
+            "max_new_tokens": 50,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": pad_token_id,
+            "do_sample": False,
+        }
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                **generation_kwargs,
+            )
+        
+        # Decode only the generated tokens (exclude input tokens)
+        input_length = input_ids.shape[1]
+        generated_tokens = outputs[:, input_length:]
+        
+        return self.tokenizer.decode(generated_tokens[0], skip_special_tokens=True)
 
     @overload
     def batched_generate(
@@ -90,26 +117,30 @@ class BaseLLM:
         Pro Tip: Only batch_decode generated tokens by masking out the inputs with
                  outputs[:, len(inputs["input_ids"][0]) :]
         """
-        from tqdm import tqdm  # Importing tqdm for progress bar
-
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
         # If you run out of memory, try to reduce the micro_batch_size.
         micro_batch_size = 32
         if len(prompts) > micro_batch_size:
-            return [
-                r
-                for idx in tqdm(
-                    range(0, len(prompts), micro_batch_size), desc=f"LLM Running on Micro Batches {micro_batch_size}"
+            # Process in micro-batches without tqdm to reduce overhead
+            results = []
+            for idx in range(0, len(prompts), micro_batch_size):
+                batch_results = self.batched_generate(
+                    prompts[idx : idx + micro_batch_size], num_return_sequences, temperature
                 )
-                for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
-            ]
+                results.extend(batch_results)
+            return results
 
+        # Store original padding side to restore later
+        original_padding_side = self.tokenizer.padding_side
+        
         # Set padding side to left for proper alignment during generation
         self.tokenizer.padding_side = "left"
 
         # Tokenize all prompts with padding
-        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self.device)
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device)
 
         # Set up generation parameters
         pad_token_id = self.tokenizer.pad_token_id
@@ -138,15 +169,18 @@ class BaseLLM:
         # Generate responses
         with torch.no_grad():
             outputs = self.model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 **generation_kwargs,
             )
+
+        # Restore original padding side
+        self.tokenizer.padding_side = original_padding_side
 
         # Decode only the generated tokens (exclude input tokens). All prompts have been
         # left padded to the same length, so slicing with the maximum input length works
         # for each sequence individually.
-        input_length = inputs["input_ids"].shape[1]
+        input_length = input_ids.shape[1]
         generated_tokens = outputs[:, input_length:]
 
         # Decode the generated tokens

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -12,7 +13,8 @@ from .data import Dataset, benchmark
 
 
 MODEL_NAME = "sft_model"
-DEFAULT_LORA_RANK = 4
+DEFAULT_LORA_RANK = 8
+DEFAULT_MAX_TRAIN_SAMPLES = 1024
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -95,7 +97,15 @@ def format_example(prompt: str, answer: float) -> dict[str, str]:
 
 
 class TokenizedDataset:
-    def __init__(self, tokenizer, data: Dataset, format_fn):
+    def __init__(
+        self,
+        tokenizer,
+        data: Dataset | Sequence[Sequence[Any]],
+        format_fn,
+        *,
+        max_samples: int | None = None,
+        seed: int = 42,
+    ):
         """
         Use the
         - BaseLLM.tokenizer
@@ -107,17 +117,36 @@ class TokenizedDataset:
         self.format_fn = format_fn
         self.tokenizer = tokenizer
         self.data = data
+        total = len(self.data)
+        self.indices = list(range(total))
+
+        if max_samples is not None:
+            max_samples = max(0, min(max_samples, total))
+            rng = random.Random(seed)
+            rng.shuffle(self.indices)
+            self.indices = self.indices[:max_samples]
 
     def __len__(self):
-        return len(self.data)
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        formated_data = self.format_fn(*self.data[idx])
+        data_idx = self.indices[idx]
+        formated_data = self.format_fn(*self.data[data_idx])
         return tokenize(self.tokenizer, **formated_data)
 
 
 def train_model(
     output_dir: str = MODEL_NAME,
+    *,
+    rank: int = DEFAULT_LORA_RANK,
+    learning_rate: float = 1e-3,
+    num_train_epochs: int = 7,
+    max_train_samples: int | None = DEFAULT_MAX_TRAIN_SAMPLES,
+    per_device_train_batch_size: int = 32,
+    gradient_accumulation_steps: int = 1,
+    seed: int = 42,
+    save_total_limit: int = 1,
+    logging_steps: int = 10,
     **_: Any,
 ):
     from transformers import Trainer, TrainingArguments
@@ -130,8 +159,8 @@ def train_model(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
         bias="none",
-        r=DEFAULT_LORA_RANK,
-        lora_alpha=max(DEFAULT_LORA_RANK * 4, 4),
+        r=rank,
+        lora_alpha=max(rank * 4, 4),
         lora_dropout=0.0,
     )
     
@@ -143,20 +172,40 @@ def train_model(
     
     # Prepare dataset
     train_dataset = Dataset("train")
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    tokenized_dataset = TokenizedDataset(
+        llm.tokenizer,
+        train_dataset,
+        format_example,
+        max_samples=max_train_samples,
+        seed=seed,
+    )
+    effective_samples = len(tokenized_dataset)
+    print(
+        f"[SFT] Training rank={rank} lr={learning_rate} epochs={num_train_epochs} "
+        f"batch={per_device_train_batch_size} samples={effective_samples}"
+    )
     
     # Training arguments
     training_args = TrainingArguments(
         output_dir=str(model_path),
-        logging_dir=str(model_path),
-        report_to="tensorboard",
+        logging_dir=str(model_path / "logs"),
+        report_to="none",
         gradient_checkpointing=True,
-        learning_rate=2e-4,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         save_strategy="epoch",
-        logging_steps=10,
-        save_total_limit=1,
+        logging_steps=logging_steps,
+        save_total_limit=save_total_limit,
+        warmup_ratio=0.05,
+        lr_scheduler_type="cosine",
+        optim="adamw_torch",
+        fp16=torch.cuda.is_available(),
+        bf16=False,
+        dataloader_pin_memory=torch.cuda.is_available(),
+        seed=seed,
+        data_seed=seed,
     )
     
     # Create trainer

@@ -10,7 +10,7 @@ from transformers import Trainer, TrainingArguments
 from .base_llm import BaseLLM
 from .conversion_utils import apply_dataset_answer_patch
 from .data import Dataset, benchmark
-from .sft import DEFAULT_LORA_RANK, TokenizedDataset, _resolve_path, tokenize
+from .sft import DEFAULT_LORA_RANK, DEFAULT_MAX_TRAIN_SAMPLES, TokenizedDataset, _resolve_path
 
 
 MODEL_NAME = "rft_model"
@@ -62,6 +62,16 @@ def format_rft_example(question: str, answer: float, reasoning: str) -> dict[str
 
 def train_model(
     output_dir: str = MODEL_NAME,
+    *,
+    rank: int = RFT_LORA_RANK,
+    learning_rate: float = 1e-3,
+    num_train_epochs: int = 7,
+    max_train_samples: int | None = DEFAULT_MAX_TRAIN_SAMPLES,
+    per_device_train_batch_size: int = 32,
+    gradient_accumulation_steps: int = 1,
+    seed: int = 42,
+    save_total_limit: int = 1,
+    logging_steps: int = 10,
     **_: Any,
 ):
     import json
@@ -74,8 +84,8 @@ def train_model(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
         bias="none",
-        r=RFT_LORA_RANK,
-        lora_alpha=max(RFT_LORA_RANK * 4, 4),
+        r=rank,
+        lora_alpha=max(rank * 4, 4),
         lora_dropout=0.0,
     )
     
@@ -108,20 +118,40 @@ def train_model(
             return self.data[idx]
     
     rft_dataset = RFTDataset(rft_data)
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
+    tokenized_dataset = TokenizedDataset(
+        llm.tokenizer,
+        rft_dataset,
+        format_rft_example,
+        max_samples=max_train_samples,
+        seed=seed,
+    )
+    effective_samples = len(tokenized_dataset)
+    print(
+        f"[RFT] Training rank={rank} lr={learning_rate} epochs={num_train_epochs} "
+        f"batch={per_device_train_batch_size} samples={effective_samples}"
+    )
     
     # Training arguments
     training_args = TrainingArguments(
         output_dir=str(model_path),
-        logging_dir=str(model_path),
-        report_to="tensorboard",
+        logging_dir=str(model_path / "logs"),
+        report_to="none",
         gradient_checkpointing=True,
-        learning_rate=2e-4,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         save_strategy="epoch",
-        logging_steps=10,
-        save_total_limit=1,
+        logging_steps=logging_steps,
+        save_total_limit=save_total_limit,
+        warmup_ratio=0.05,
+        lr_scheduler_type="cosine",
+        optim="adamw_torch",
+        fp16=torch.cuda.is_available(),
+        bf16=False,
+        dataloader_pin_memory=torch.cuda.is_available(),
+        seed=seed,
+        data_seed=seed,
     )
     
     # Create trainer

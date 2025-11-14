@@ -91,3 +91,11 @@ python3 -m grader homework -v
 ```
 
 The non-batched and batched inference tests should now pass within their timeouts.
+
+## Training-Time Improvements (Nov 2025)
+
+- **CoT prompt trim:** Shortened the instruction block in `homework/cot.py` to a compact, two-shot template so the 360M model reaches the 0.5 accuracy bar with fewer prompt tokens.
+- **Configurable LoRA ranks:** `homework.sft.train_model` and `homework.rft.train_model` now accept `rank` (default 8 for SFT, 16 for RFT) while keeping `lora_alpha = 4 * r`, making it easy to trade accuracy vs. adapter size.
+- **Faster yet accurate training:** Both trainers use `learning_rate=1e-3`, `num_train_epochs=7`, cosine decay, and default subsets (`max_train_samples=1024`) so runs finish before grader timeouts but still clear the 0.6/0.65 score targets.
+- **Deterministic sub-sampling:** The shared `TokenizedDataset` shuffles with a seed and limits examples, which stabilizes accuracy and avoids wasting epochs on the full corpus when a smaller slice suffices.
+- **CLI ergonomics:** All new knobs are exposed through Fire, so experimenting with ranks, samples, or epochs just means passing flags such as `python -m homework.sft train --rank=12 --max_train_samples=1500`.

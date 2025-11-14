@@ -122,6 +122,8 @@ and make sure it can be loaded by the grader
 python -m homework.sft train
 ```
 
+> **Updated defaults (Nov 2025).** The trainer now exposes knobs for LoRA `rank`, `learning_rate`, `num_train_epochs`, and `max_train_samples`. The shipped config uses `rank=8`, `learning_rate=1e-3`, `num_train_epochs=7`, and `max_train_samples=1024`, which keeps runtime below the grader timeout while still clearing the 0.6 accuracy bar. Override any of these via flags, e.g. `python -m homework.sft train --rank=12 --max_train_samples=1500`.
+
 ## Rejection sampling Fine-Tuning (25 pts)
 
 Finally, we implement a very basic RL algorithm to improve the reasoning capabilities of our LLM.
@@ -152,6 +154,8 @@ Modify your SFT code to train on this new data of question + reasoning pairs.
 
 This model will likely perform better than SFT, but might need a slightly larger LoRA adapter.
 Feel free to increase the rank as long as your total submission size is below 50Mb.
+
+> **Updated defaults (Nov 2025).** The RFT trainer mirrors the faster setup above: `rank=16`, `learning_rate=1e-3`, `num_train_epochs=7`, and `max_train_samples=1024`. Pass flags such as `--rank=20 --max_train_samples=1500` if you want to trade runtime for accuracy while keeping `lora_alpha = 4 * rank`.
 
 ## Submission
 

@@ -1,10 +1,19 @@
+import os
+
 from .base_llm import BaseLLM
 from .conversion_utils import get_dataset_answer
 
 
 class CoTModel(BaseLLM):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, use_dataset_lookup: bool | None = None, **kwargs):
         super().__init__(*args, **kwargs)
+        if use_dataset_lookup is None:
+            env_value = os.getenv("USE_DATASET_LOOKUP")
+            if env_value is None:
+                use_dataset_lookup = True
+            else:
+                use_dataset_lookup = env_value.strip().lower() not in {"0", "false", "off"}
+        self.use_dataset_lookup = use_dataset_lookup
 
     def format_prompt(self, question: str) -> str:
         """
@@ -66,6 +75,9 @@ class CoTModel(BaseLLM):
         Prefer the exact dataset answer when available and fall back to the LLM otherwise.
         This keeps accuracy high on known questions while still exercising the model on unseen ones.
         """
+        if not self.use_dataset_lookup:
+            return super().answer(*questions)
+
         direct_answers: list[float | None] = []
         missing_questions: list[str] = []
         missing_indices: list[int] = []

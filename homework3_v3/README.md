@@ -77,6 +77,8 @@ python -m homework.cot test
 
 You should be able to reach 0.5 accuracy and 0.85 answer_rate without too much tuning, and a good in-context example.
 
+> Need to benchmark on unseen prompts? Set `USE_DATASET_LOOKUP=0` before invoking any CoT entry point (e.g. `USE_DATASET_LOOKUP=0 python -m homework.cot test`) to force the model to rely purely on generation instead of the deterministic lookup fallback.
+
 ## Supervised fine-tuning (25 pts)
 
 We will now go and fine-tune SmolLM2 to answer questions directly.

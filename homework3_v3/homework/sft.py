@@ -50,7 +50,8 @@ def load() -> BaseLLM:
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
+    # DO NOT apply dataset answer patch - we want the actual trained model!
+    # apply_dataset_answer_patch(llm)
 
     return llm
 
@@ -443,7 +444,7 @@ def train_model(
     test_model(str(model_path))
 
 
-def test_model(ckpt_path: str):
+def test_model(ckpt_path: str = MODEL_NAME):
     testset = Dataset("valid")
     model_path = _resolve_path(ckpt_path)
     _ensure_adapter(model_path)
@@ -451,7 +452,7 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    # Don't apply dataset answer patch during testing - we want to test actual model
+    # DO NOT apply dataset answer patch - we want to test the actual trained model
     # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)

@@ -1,3 +1,18 @@
+import os
+import sys
+import warnings
+
+# Suppress CUDA/TensorFlow warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["XLA_FLAGS"] = "--xla_gpu_force_compilation_parallelism=1"
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*cuFFT.*")
+warnings.filterwarnings("ignore", message=".*cuDNN.*")
+warnings.filterwarnings("ignore", message=".*cuBLAS.*")
+warnings.filterwarnings("ignore", message=".*computation placer.*")
+# Suppress RuntimeWarning about module import order
+warnings.filterwarnings("ignore", message=".*found in sys.modules.*", category=RuntimeWarning)
+
 from .base_llm import BaseLLM
 from .conversion_utils import apply_dataset_answer_patch
 
@@ -29,6 +44,10 @@ class CoTModel(BaseLLM):
             {
                 "role": "assistant",
                 "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
+            },
+            {
+                "role": "user",
+                "content": question,  # Add the actual question here
             },
         ]
 

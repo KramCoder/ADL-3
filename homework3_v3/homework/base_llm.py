@@ -1,4 +1,16 @@
 from typing import overload
+import os
+import warnings
+
+# Suppress CUDA/TensorFlow warnings early, before importing torch
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("XLA_FLAGS", "--xla_gpu_force_compilation_parallelism=1")
+
+# Suppress CUDA-related warnings
+warnings.filterwarnings("ignore", message=".*cuFFT.*")
+warnings.filterwarnings("ignore", message=".*cuDNN.*")
+warnings.filterwarnings("ignore", message=".*cuBLAS.*")
+warnings.filterwarnings("ignore", message=".*computation placer.*")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer

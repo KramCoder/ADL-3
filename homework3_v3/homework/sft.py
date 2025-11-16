@@ -434,6 +434,15 @@ def train_model(
                 else:
                     print(f"{key}: {value}")
     
+    # Also try to get learning rate from trainer state if not in metrics
+    has_lr_in_metrics = any('learning_rate' in key for key in train_result.metrics.keys()) if hasattr(train_result, 'metrics') else False
+    if not has_lr_in_metrics and hasattr(trainer.state, 'log_history') and len(trainer.state.log_history) > 0:
+        # Get the last logged learning rate
+        for log_entry in reversed(trainer.state.log_history):
+            if 'learning_rate' in log_entry:
+                print(f"Final Learning Rate: {log_entry['learning_rate']:.2e}")
+                break
+    
     # Save the final model
     print(f"\nSaving model to {model_path}")
     trainer.save_model(str(model_path))
@@ -443,12 +452,46 @@ def train_model(
     test_model(str(model_path))
 
 
+class SFTLLM(BaseLLM):
+    """BaseLLM with chat template formatting for Instruct models."""
+    
+    def format_prompt(self, question: str) -> str:
+        """
+        Format question using chat template for Instruct models.
+        This matches the format the model expects during inference.
+        """
+        question = question.strip()
+        
+        # Check if tokenizer has a chat template
+        if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+            # Use chat template with a simple user message
+            messages = [
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            ]
+            try:
+                return self.tokenizer.apply_chat_template(
+                    messages, 
+                    add_generation_prompt=True, 
+                    tokenize=False
+                )
+            except Exception:
+                # Fallback to plain question if chat template fails
+                return question
+        else:
+            # No chat template available, return question as-is
+            return question
+
+
 def test_model(ckpt_path: str):
     testset = Dataset("valid")
     model_path = _resolve_path(ckpt_path)
     _ensure_adapter(model_path)
 
-    llm = BaseLLM()
+    # Use SFTLLM which has proper chat template formatting
+    llm = SFTLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
     # Don't apply dataset answer patch during testing - we want to test actual model

@@ -75,10 +75,26 @@ class BaseLLM:
         """
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        
+        Handles two cases:
+        1. Full format: "<answer>value</answer>"
+        2. Partial format (from generation): "value</answer>" or just "value"
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
+            # First try to find the closing tag
+            if "</answer>" in answer:
+                # Extract everything before </answer>
+                value_str = answer.split("</answer>")[0]
+                # If there's an opening tag, extract the value after it
+                if "<answer>" in value_str:
+                    value_str = value_str.split("<answer>")[1]
+                # Try to parse the value
+                return float(value_str.strip())
+            else:
+                # No closing tag - try to parse the whole thing as a number
+                # This handles cases where model generates just the number
+                return float(answer.strip())
+        except (ValueError, IndexError):
             return float("nan")
 
     def generate(self, prompt: str) -> str:
@@ -108,7 +124,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=30,  # Optimized for non-batched test
+                max_new_tokens=50,  # Increased to ensure we can generate full answer tags
                 min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -196,7 +212,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 40,  # Balanced for speed and quality
+            "max_new_tokens": 50,  # Increased to ensure we can generate full answer tags
             "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,

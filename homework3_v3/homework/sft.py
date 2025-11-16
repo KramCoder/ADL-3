@@ -69,7 +69,9 @@ def tokenize(tokenizer, question: str, answer: str):
         tokenizer.pad_token = tokenizer.eos_token
     
     # Format the full text: question + answer + EOS
-    full_text = f"{question} {answer}{tokenizer.eos_token}"
+    # Ensure consistent spacing - strip question and add single space
+    question_clean = question.strip()
+    full_text = f"{question_clean} {answer}{tokenizer.eos_token}"
     
     # Tokenize the full text (this is what the model will see)
     max_length = 128
@@ -85,7 +87,8 @@ def tokenize(tokenizer, question: str, answer: str):
     attention_mask = encoded["attention_mask"]
     
     # Now find where the question ends by tokenizing question separately
-    question_with_space = f"{question} "
+    # Use the same cleaned question for consistency
+    question_with_space = f"{question_clean} "
     question_encoded = tokenizer(
         question_with_space,
         add_special_tokens=True,
@@ -429,10 +432,16 @@ def train_model(
                     print(f"Final Loss: {value:.6f}")
                 elif key == 'train_grad_norm':
                     print(f"Final Gradient Norm: {value:.6f}")
-                elif 'learning_rate' in key:
-                    print(f"Learning Rate: {value:.2e}")
+                elif 'learning_rate' in key.lower():
+                    print(f"{key}: {value:.2e}")
                 else:
                     print(f"{key}: {value}")
+    
+    # Also print the final learning rate from state if available
+    if hasattr(trainer.state, 'log_history') and len(trainer.state.log_history) > 0:
+        last_log = trainer.state.log_history[-1]
+        if 'learning_rate' in last_log:
+            print(f"Final Learning Rate: {last_log['learning_rate']:.2e}")
     
     # Save the final model
     print(f"\nSaving model to {model_path}")

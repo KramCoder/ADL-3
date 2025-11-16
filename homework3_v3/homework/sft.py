@@ -67,29 +67,87 @@ def tokenize(tokenizer, question: str, answer: str):
 
     tokenizer.padding_side = "right"
     tokenizer.pad_token = tokenizer.eos_token
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
-
-    input_ids = full["input_ids"]
     
-    # Tokenize the question with the trailing space to match how it appears in full_text
-    # This ensures we get the correct boundary between question and answer
-    question_with_space = f"{question} "
-    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
-    question_len = len(question_tokens)
+    # Tokenize full text with padding and truncation
+    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
+    input_ids = full["input_ids"]
+    attention_mask = full["attention_mask"]
+    
+    # Find where the answer starts by looking for the <answer> token
+    # This is more reliable than trying to match tokenizations
+    answer_start_text = "<answer>"
+    answer_start_encoded = tokenizer(answer_start_text, add_special_tokens=False)
+    answer_start_tokens = answer_start_encoded["input_ids"]
+    
+    # Find the position of <answer> in the tokenized sequence
+    answer_start_idx = len(input_ids)  # Default: no answer found
+    
+    # Search for answer_start_tokens in input_ids
+    if len(answer_start_tokens) > 0:
+        for i in range(len(input_ids) - len(answer_start_tokens) + 1):
+            if input_ids[i:i+len(answer_start_tokens)] == answer_start_tokens:
+                answer_start_idx = i
+                break
+    
+    # Fallback: if <answer> token not found, try to find where question ends
+    # by tokenizing the question separately
+    if answer_start_idx >= len(input_ids):
+        question_with_space = f"{question} "
+        question_encoded = tokenizer(question_with_space, add_special_tokens=True)
+        question_token_ids = question_encoded["input_ids"]
+        
+        # Find longest matching prefix
+        question_len = len(question_token_ids)
+        max_match_len = min(question_len, len(input_ids))
+        for i in range(max_match_len):
+            if i < len(question_token_ids) and i < len(input_ids):
+                if question_token_ids[i] != input_ids[i]:
+                    answer_start_idx = i
+                    break
+            else:
+                break
+        
+        # If still no match, use question_len as fallback
+        if answer_start_idx >= len(input_ids):
+            answer_start_idx = min(question_len, len(input_ids))
+
+    # Ensure answer_start_idx is valid
+    answer_start_idx = min(answer_start_idx, len(input_ids))
+    
+    # Ensure we have at least some answer tokens to train on
+    # If answer_start_idx is too close to the end, adjust it
+    if answer_start_idx >= len(input_ids) - 2:
+        # No answer found, mask everything (shouldn't happen normally)
+        answer_start_idx = len(input_ids)
 
     # Create labels: mask out the prompt part (question), keep only answer for training
-    labels = [-100] * question_len + input_ids[question_len:]
+    labels = [-100] * answer_start_idx + input_ids[answer_start_idx:]
     
-    # Ensure labels list has the same length as input_ids
+    # Ensure labels list has exactly the same length as input_ids
     labels = labels[:len(input_ids)]
+    while len(labels) < len(input_ids):
+        labels.append(-100)
 
     # Mask out padding tokens as well
     for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
+        if attention_mask[i] == 0:
             labels[i] = -100
+    
+    # Verify we have at least some non-masked tokens (for debugging)
+    # This ensures we're actually training on something
+    num_trainable_tokens = sum(1 for label in labels if label != -100)
+    if num_trainable_tokens == 0:
+        # Fallback: if somehow all tokens are masked, at least train on the last few tokens
+        # This shouldn't happen normally, but it's a safety check
+        if len(input_ids) > 0:
+            # Train on the last token as a fallback
+            labels[-1] = input_ids[-1]
 
-    full["labels"] = labels
-    return full
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
 
 
 def format_example(prompt: str, answer: float) -> dict[str, str]:

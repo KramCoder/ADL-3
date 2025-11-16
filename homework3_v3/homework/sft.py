@@ -5,6 +5,7 @@ from typing import Any
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
+from transformers import TrainerCallback
 
 from .base_llm import BaseLLM
 from .conversion_utils import apply_dataset_answer_patch, format_numeric_answer
@@ -179,6 +180,20 @@ class TokenizedDataset:
         return tokenize(self.tokenizer, **formatted_data)
 
 
+class GradientNormCallback(TrainerCallback):
+    """Callback to monitor and handle NaN gradients."""
+    
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None:
+            grad_norm = logs.get("grad_norm", None)
+            if grad_norm is not None:
+                if not isinstance(grad_norm, (int, float)) or (isinstance(grad_norm, float) and (grad_norm != grad_norm or grad_norm == float('inf'))):
+                    # NaN or Inf detected
+                    print(f"WARNING: Invalid gradient norm detected: {grad_norm}")
+                    # The max_grad_norm should prevent this, but if it still happens,
+                    # we can add additional handling here
+
+
 def train_model(
     output_dir: str = MODEL_NAME,
     **_: Any,
@@ -245,17 +260,22 @@ def train_model(
         remove_unused_columns=False,  # Keep our custom labels
         fp16=torch.cuda.is_available(),  # Use fp16 if CUDA available
         dataloader_pin_memory=False,  # Can help with memory issues
+        label_names=["labels"],  # Explicitly tell Trainer which field contains labels (required for PeftModel)
+        max_grad_norm=1.0,  # Clip gradients to prevent NaN values
     )
     
     # Use default data collator which handles batching correctly
     data_collator = default_data_collator
     
-    # Create trainer
+    # Create trainer with callback to monitor gradients
+    gradient_callback = GradientNormCallback()
+    
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
         data_collator=data_collator,
+        callbacks=[gradient_callback],
     )
     
     # Train

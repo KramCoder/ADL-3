@@ -1,4 +1,5 @@
 import os
+import re
 import warnings
 from typing import overload
 
@@ -62,24 +63,45 @@ class BaseLLM:
 
     def format_prompt(self, question: str) -> str:
         """
-        Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
-        better if you provide a chat template. self.tokenizer.apply_chat_template can help here
-        
-        For SFT training, we need to match the format seen during training:
-        Training format: "question <answer>value</answer>"
-        Inference format: "question <answer>" (model completes the rest)
+        Format prompts so inference matches the SFT training distribution.
+
+        Training examples look like ``question <answer>value</answer>``.  During
+        inference we therefore feed only the raw question followed by a trailing
+        space so the model has to emit the full ``<answer>...</answer>`` span on
+        its own.  This keeps the supervision boundary identical to what
+        ``tokenize`` prepares for training and ensures the generated text still
+        contains the tags that ``parse_answer`` expects.
         """
-        return f"{question.strip()} <answer>"
+        return f"{question.strip()} "
 
     def parse_answer(self, answer: str) -> float:
         """
         Parse the <answer></answer> tag and return a float.
-        This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        Falls back to extracting the first numeric span if tags are missing.
         """
-        try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
+        if not answer:
             return float("nan")
+
+        answer = answer.strip()
+        tag = "<answer>"
+        start = answer.rfind(tag)
+        if start != -1:
+            start += len(tag)
+            end = answer.find("</answer>", start)
+            snippet = answer[start : end if end != -1 else None].strip()
+            try:
+                return float(snippet)
+            except ValueError:
+                pass
+
+        # Fallback: extract the first numeric token (handles bare numbers)
+        match = re.search(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", answer)
+        if match:
+            try:
+                return float(match.group(0))
+            except ValueError:
+                return float("nan")
+        return float("nan")
 
     def generate(self, prompt: str) -> str:
         """

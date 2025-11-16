@@ -268,8 +268,9 @@ def train_model(
     model_path = _resolve_path(output_dir)
     model_path.mkdir(parents=True, exist_ok=True)
     
-    # Load base model
-    llm = BaseLLM()
+    # Load base model in FP32 for training to avoid NaN gradients
+    # FP16 model + FP16 training causes numerical instability
+    llm = BaseLLM(use_fp32_for_training=True)
     
     # Ensure model is in eval mode initially (BaseLLM sets this)
     # We'll set to train mode after applying LoRA
@@ -339,7 +340,7 @@ def train_model(
         fp16=use_fp16,  # Fallback to fp16 if bf16 not available
         fp16_full_eval=False,  # Use full precision for evaluation
         dataloader_pin_memory=False,  # Can help with memory issues
-        max_grad_norm=1.0,  # Clip gradients to prevent explosion and NaN
+        max_grad_norm=1.0,  # Clip gradients to prevent explosion
         label_names=["labels"],  # Explicitly specify label field for PeftModel
         # Additional stability settings
         dataloader_num_workers=0,  # Avoid multiprocessing issues

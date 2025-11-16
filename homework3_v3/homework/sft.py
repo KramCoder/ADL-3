@@ -57,84 +57,99 @@ def load() -> BaseLLM:
 
 def tokenize(tokenizer, question: str, answer: str):
     """
-    Tokenize a data element.
-    We first append the <EOS> token to the question / answer pair.
-    Then we tokenize and construct the ground truth `labels`.
-    `labels[i] == -100` for the question or masked out parts, since we only want to supervise
-    the answer.
+    Tokenize a question/answer pair for causal LM training.
+    We mask out the question tokens (set labels to -100) and only compute loss on the answer.
     """
+    # Format: question + space + answer + EOS
+    # According to README: simply ask the model to complete a question with <answer>{answer}</answer>
     full_text = f"{question} {answer}{tokenizer.eos_token}"
-
-    tokenizer.padding_side = "right"
+    
+    # Ensure pad token is set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
     # Tokenize the full text
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
-    input_ids = full["input_ids"]
+    encoded = tokenizer(
+        full_text,
+        padding="max_length",
+        truncation=True,
+        max_length=128,
+        return_tensors=None,
+    )
     
-    # Tokenize just the question part to find where it ends
-    # We need to match exactly how it appears in the full text
-    question_text = f"{question} "
-    question_encoded = tokenizer(question_text, add_special_tokens=True, return_tensors=None)
-    question_token_ids = question_encoded["input_ids"]
-    question_len = len(question_token_ids)
+    input_ids = encoded["input_ids"]
+    attention_mask = encoded["attention_mask"]
     
-    # The question tokens should appear at the start of the full sequence
-    # Find the exact match
-    question_len = 0
-    if len(question_token_ids) > 0 and len(question_token_ids) <= len(input_ids):
-        # Check if the first question_len tokens match exactly
-        if input_ids[:len(question_token_ids)] == question_token_ids:
-            question_len = len(question_token_ids)
-        else:
-            # Try to find where question tokens appear (with small offset for special tokens)
-            for offset in range(min(2, len(input_ids) - len(question_token_ids) + 1)):
-                if input_ids[offset:offset+len(question_token_ids)] == question_token_ids:
-                    question_len = offset + len(question_token_ids)
+    # Find where the answer starts by looking for "<answer>" tag
+    # Tokenize the "<answer>" tag to find its token sequence
+    answer_tag = "<answer>"
+    tag_encoded = tokenizer(answer_tag, add_special_tokens=False, return_tensors=None)
+    tag_token_ids = tag_encoded["input_ids"]
+    
+    # Create labels: -100 for question tokens, actual token ids for answer tokens
+    labels = [-100] * len(input_ids)
+    
+    # Find where "<answer>" appears in the input_ids
+    answer_start_idx = None
+    if len(tag_token_ids) > 0:
+        for i in range(len(input_ids) - len(tag_token_ids) + 1):
+            if input_ids[i:i + len(tag_token_ids)] == tag_token_ids:
+                # Found the answer tag, start labeling from here
+                answer_start_idx = i
+                break
+    
+    # If we found the answer tag, set labels from that point onward
+    if answer_start_idx is not None:
+        for i in range(answer_start_idx, len(input_ids)):
+            if attention_mask[i] == 1:  # Only set labels for non-padding tokens
+                labels[i] = input_ids[i]
+    else:
+        # Fallback: tokenize question separately to estimate where answer starts
+        question_text = f"{question} "
+        question_encoded = tokenizer(
+            question_text,
+            add_special_tokens=True,
+            return_tensors=None,
+        )
+        question_token_ids = question_encoded["input_ids"]
+        
+        # Remove EOS if present
+        if question_token_ids and question_token_ids[-1] == tokenizer.eos_token_id:
+            question_token_ids = question_token_ids[:-1]
+        
+        # Try to find question tokens in input_ids
+        for start_idx in range(min(3, len(input_ids))):
+            end_idx = start_idx + len(question_token_ids)
+            if end_idx <= len(input_ids):
+                if input_ids[start_idx:end_idx] == question_token_ids:
+                    # Set labels from end of question
+                    for i in range(end_idx, len(input_ids)):
+                        if attention_mask[i] == 1:
+                            labels[i] = input_ids[i]
                     break
-            
-            # If still no match, use the question token length as estimate
-            # This handles cases where tokenization differs slightly
-            if question_len == 0:
-                question_len = len(question_token_ids)
+        else:
+            # Last resort: use question length estimate
+            answer_start = min(len(question_token_ids), len(input_ids) - 1)
+            for i in range(answer_start, len(input_ids)):
+                if attention_mask[i] == 1:
+                    labels[i] = input_ids[i]
     
-    # Ensure we have room for at least some answer tokens
-    if question_len >= len(input_ids):
-        question_len = max(0, len(input_ids) - 10)  # Leave some room for answer
-    
-    # Create labels: mask out the question part, keep answer for training
-    labels = [-100] * question_len
-    if question_len < len(input_ids):
-        # Copy the answer tokens (and EOS) as labels
-        labels.extend(input_ids[question_len:])
-    
-    # Ensure labels list has the same length as input_ids
-    labels = labels[:len(input_ids)]
-    
-    # Mask out padding tokens as well
-    for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
-            labels[i] = -100
-    
-    # Validation: ensure we have at least some non-masked labels
-    # If all labels are masked, something went wrong
+    # Ensure we have at least some non-masked labels for training
     non_masked_count = sum(1 for l in labels if l != -100)
     if non_masked_count == 0:
-        # Fallback: if everything is masked, at least train on the last few tokens
-        # This shouldn't happen, but provides a safety net
-        if len(input_ids) > 5:
-            for i in range(max(question_len, len(input_ids) - 5), len(input_ids)):
-                if full["attention_mask"][i] == 1:
-                    labels[i] = input_ids[i]
-
-    full["labels"] = labels
-    return full
+        # Emergency fallback: train on last few tokens
+        for i in range(max(0, len(input_ids) - 10), len(input_ids)):
+            if attention_mask[i] == 1:
+                labels[i] = input_ids[i]
+    
+    encoded["labels"] = labels
+    return encoded
 
 
 def format_example(prompt: str, answer: float) -> dict[str, str]:
     """
-    Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
+    Construct a question / answer pair.
+    According to README: simply ask the model to complete a question with <answer>{answer}</answer>
     """
     formatted_answer = format_numeric_answer(answer)
     return {
@@ -146,12 +161,7 @@ def format_example(prompt: str, answer: float) -> dict[str, str]:
 class TokenizedDataset:
     def __init__(self, tokenizer, data: Dataset, format_fn):
         """
-        Use the
-        - BaseLLM.tokenizer
-        - Dataset
-        - format_fn which converts a data element into a dict with entries
-          - question: str
-          - answer: str
+        Dataset that tokenizes examples on the fly.
         """
         self.format_fn = format_fn
         self.tokenizer = tokenizer
@@ -161,44 +171,59 @@ class TokenizedDataset:
         return len(self.data)
 
     def __getitem__(self, idx):
-        formated_data = self.format_fn(*self.data[idx])
-        return tokenize(self.tokenizer, **formated_data)
+        # Get question and answer from dataset
+        question, answer = self.data[idx]
+        # Format into question/answer dict
+        formatted = self.format_fn(question, answer)
+        # Tokenize and return
+        return tokenize(self.tokenizer, formatted["question"], formatted["answer"])
 
 
 def train_model(
     output_dir: str = MODEL_NAME,
     **_: Any,
 ):
-    from transformers import Trainer, TrainingArguments, default_data_collator
+    from transformers import Trainer, TrainingArguments
     
     model_path = _resolve_path(output_dir)
+    model_path.mkdir(parents=True, exist_ok=True)
     
-    # Load base model and create LoRA adapter
+    # Load base model
     llm = BaseLLM()
+    
+    # Create LoRA config as per README
+    # - target_modules="all-linear"
+    # - bias="none" and task_type="CAUSAL_LM"
+    # - r rank such that overall model size stays below 20MB
+    # - lora_alpha about 4-5 times the rank
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
         bias="none",
         r=DEFAULT_LORA_RANK,
-        lora_alpha=max(DEFAULT_LORA_RANK * 4, 4),
+        lora_alpha=DEFAULT_LORA_RANK * 4,
         lora_dropout=0.0,
-        inference_mode=False,  # CRITICAL: Must be False for training
     )
     
+    # Convert to LoRA model
     lora_model = get_peft_model(llm.model, config)
     
-    # Set model to training mode
-    lora_model.train()
-    
-    # Enable input require grads for gradient checkpointing
-    # This is essential for training to work properly with gradient checkpointing
+    # Enable input require grads for gradient checkpointing (per README)
     lora_model.enable_input_require_grads()
+    
+    # Set to training mode
+    lora_model.train()
     
     # Prepare dataset
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
     
-    # Training arguments
+    # Training arguments as per README
+    # - gradient_checkpointing=True to save GPU memory
+    # - reasonable learning_rate
+    # - output_dir, logging_dir, report_to="tensorboard"
+    # - per_device_train_batch_size=32
+    # - num_train_epochs (shouldn't need more than 5)
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
@@ -210,11 +235,14 @@ def train_model(
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
-        # Explicitly set label names for PeftModel
-        label_names=["labels"],
+        remove_unused_columns=False,  # Keep our custom labels
+        fp16=torch.cuda.is_available(),  # Use mixed precision if GPU available
     )
     
-    # Create trainer with default_data_collator which preserves our custom labels
+    # Use default data collator which preserves our custom labels
+    from transformers import default_data_collator
+    
+    # Create trainer
     trainer = Trainer(
         model=lora_model,
         args=training_args,
@@ -225,7 +253,7 @@ def train_model(
     # Train
     trainer.train()
     
-    # Save the final model
+    # Save the final model to the specified directory
     trainer.save_model()
     
     # Test the model
@@ -240,8 +268,7 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    # NOTE: Do NOT apply dataset answer patch during testing
-    # We want to test the actual model, not the lookup table
+    # Do NOT apply dataset answer patch during testing - we want to test the actual model
     # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)

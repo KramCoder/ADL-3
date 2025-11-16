@@ -1,6 +1,8 @@
 import builtins
 import inspect
 import logging
+import math
+import numbers
 import sys
 import time
 import traceback
@@ -68,11 +70,19 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
                     raise TimeoutError(f"Timeout after {elapsed:.2f} s")
 
                 if v is None:
-                    v = 1
+                    v = 1.0
                 elif isinstance(v, tuple):
                     v, msg = v
-                else:
-                    assert isinstance(v, float), f"case returned {v!r} which is not a float!"
+
+                if not isinstance(v, numbers.Real):
+                    raise AssertionError(f"case returned {v!r} which is not a number!")
+
+                v = float(v)
+
+                if math.isnan(v):
+                    nan_msg = "score was NaN and treated as 0"
+                    msg = f"{msg} ({nan_msg})" if msg else nan_msg
+                    v = 0.0
 
                 n_passed += v
             except TimeoutError as e:
@@ -89,7 +99,16 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
-        final_score = int(n_passed * score / total + 0.5)
+        if total == 0:
+            msg = f"0 / {score} no valid cases were executed"
+            return 0, msg, error
+
+        raw_score = n_passed * score / total
+
+        if math.isnan(raw_score):
+            raw_score = 0.0
+
+        final_score = int(raw_score + 0.5)
         msg = f"{final_score} / {score} {msg}"
 
         return final_score, msg, error

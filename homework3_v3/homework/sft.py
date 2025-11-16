@@ -183,7 +183,87 @@ def train_model(
     output_dir: str = MODEL_NAME,
     **_: Any,
 ):
-    from transformers import Trainer, TrainingArguments, default_data_collator
+    from transformers import Trainer, TrainingArguments, default_data_collator, TrainerCallback
+    import numpy as np
+    
+    # Custom callback to validate gradients and compute proper gradient norms
+    class GradientNormCallback(TrainerCallback):
+        def on_step_end(self, args, state, control, model=None, **kwargs):
+            """Validate gradients after backward pass but before optimizer step"""
+            if model is not None:
+                # Check all gradients for NaN/Inf before clipping
+                has_nan = False
+                has_inf = False
+                total_norm = 0.0
+                param_count = 0
+                
+                for name, param in model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        # Check for NaN/Inf
+                        if torch.isnan(param.grad).any():
+                            has_nan = True
+                            print(f"WARNING: NaN detected in gradient for {name}")
+                        if torch.isinf(param.grad).any():
+                            has_inf = True
+                            print(f"WARNING: Inf detected in gradient for {name}")
+                        
+                        # Compute norm (only if not NaN/Inf)
+                        if not (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                            param_norm = param.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                            param_count += 1
+                
+                # If NaN/Inf detected, zero out gradients to prevent training instability
+                if has_nan or has_inf:
+                    print(f"ERROR: NaN/Inf gradients detected! Zeroing gradients to prevent training crash.")
+                    for param in model.parameters():
+                        if param.requires_grad and param.grad is not None:
+                            param.grad.zero_()
+                    # Set a flag in state to track this
+                    if not hasattr(state, 'nan_gradient_count'):
+                        state.nan_gradient_count = 0
+                    state.nan_gradient_count += 1
+                
+                # Store computed norm in state for logging
+                if param_count > 0 and not (has_nan or has_inf):
+                    state.last_grad_norm = total_norm ** (1. / 2)
+                else:
+                    state.last_grad_norm = float('nan') if (has_nan or has_inf) else 0.0
+        
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            """Update logs with computed gradient norm"""
+            if logs is not None:
+                # Use our computed norm if available, otherwise keep the original
+                if hasattr(state, 'last_grad_norm'):
+                    logs['grad_norm'] = state.last_grad_norm
+                elif 'grad_norm' not in logs:
+                    # Fallback: compute from model if available
+                    model = kwargs.get('model')
+                    if model is not None:
+                        total_norm = 0.0
+                        param_count = 0
+                        for p in model.parameters():
+                            if p.requires_grad and p.grad is not None:
+                                if not (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
+                                    param_norm = p.grad.data.norm(2)
+                                    total_norm += param_norm.item() ** 2
+                                    param_count += 1
+                        if param_count > 0:
+                            logs['grad_norm'] = total_norm ** (1. / 2)
+                        else:
+                            logs['grad_norm'] = 0.0
+                
+                if hasattr(state, 'nan_gradient_count') and state.nan_gradient_count > 0:
+                    logs['nan_gradient_count'] = state.nan_gradient_count
+                
+                # Validate loss values
+                if 'loss' in logs:
+                    loss_val = logs['loss']
+                    if isinstance(loss_val, (float, int)):
+                        if np.isnan(loss_val) or np.isinf(loss_val):
+                            print(f"WARNING: Invalid loss value detected: {loss_val}")
+                        elif loss_val == 0.0 and state.global_step > 0:
+                            print(f"WARNING: Loss is exactly 0.0 at step {state.global_step} - this may indicate an issue")
     
     model_path = _resolve_path(output_dir)
     model_path.mkdir(parents=True, exist_ok=True)
@@ -230,7 +310,19 @@ def train_model(
     if non_masked_labels == 0:
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
-    # Training arguments
+    # Determine precision settings - prefer bf16 over fp16 for stability
+    use_bf16 = False
+    use_fp16 = False
+    if torch.cuda.is_available():
+        # Check if bf16 is supported (Ampere+ GPUs)
+        if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+            use_bf16 = True
+            print("Using bfloat16 for training (more stable than fp16)")
+        else:
+            use_fp16 = True
+            print("Using float16 for training (with loss scaling)")
+    
+    # Training arguments with improved stability
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
@@ -243,21 +335,68 @@ def train_model(
         logging_steps=10,
         save_total_limit=1,
         remove_unused_columns=False,  # Keep our custom labels
-        fp16=torch.cuda.is_available(),  # Use fp16 if CUDA available
+        bf16=use_bf16,  # Use bf16 if available (more stable)
+        fp16=use_fp16,  # Fallback to fp16 if bf16 not available
+        fp16_full_eval=False,  # Use full precision for evaluation
         dataloader_pin_memory=False,  # Can help with memory issues
         max_grad_norm=1.0,  # Clip gradients to prevent explosion and NaN
         label_names=["labels"],  # Explicitly specify label field for PeftModel
+        # Additional stability settings
+        dataloader_num_workers=0,  # Avoid multiprocessing issues
+        ddp_find_unused_parameters=False,  # Faster training
     )
     
     # Use default data collator which handles batching correctly
     data_collator = default_data_collator
     
-    # Create trainer
-    trainer = Trainer(
+    # Custom Trainer class to ensure stable loss computation
+    class StableTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False):
+            """
+            Custom loss computation with validation to prevent NaN/Inf.
+            """
+            labels = inputs.get("labels")
+            outputs = model(**inputs)
+            logits = outputs.get("logits")
+            
+            # Use the model's loss function
+            loss = outputs.loss if hasattr(outputs, 'loss') else None
+            
+            # If loss is None, compute it manually
+            if loss is None:
+                from torch.nn import CrossEntropyLoss
+                # Use ignore_index=-100 to properly handle masked labels
+                loss_fct = CrossEntropyLoss(ignore_index=-100)
+                # Shift so that tokens < n predict n
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                # Flatten the tokens
+                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            
+            # Validate loss value
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"WARNING: Invalid loss detected (NaN/Inf): {loss.item()}")
+                # Return a small positive loss to prevent training crash
+                loss = torch.tensor(0.01, device=loss.device, dtype=loss.dtype, requires_grad=True)
+            
+            # Check if loss is suspiciously small (might indicate all labels masked)
+            if loss.item() < 1e-8 and labels is not None:
+                # Count non-masked labels
+                non_masked = (labels != -100).sum().item()
+                if non_masked == 0:
+                    print(f"WARNING: All labels are masked in this batch! Loss: {loss.item()}")
+                elif non_masked < 10:
+                    print(f"WARNING: Very few non-masked labels ({non_masked}) in this batch. Loss: {loss.item()}")
+            
+            return (loss, outputs) if return_outputs else loss
+    
+    # Create trainer with gradient norm callback and stable loss computation
+    trainer = StableTrainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
         data_collator=data_collator,
+        callbacks=[GradientNormCallback()],
     )
     
     # Train

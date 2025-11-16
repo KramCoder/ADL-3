@@ -18,7 +18,7 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
-                    "You solve unit conversions step by step. "
+                    "You solve unit conversions concisely. "
                     "State the conversion factor, calculate, then give the answer in <answer></answer> tags."
                 ),
             },
@@ -29,18 +29,6 @@ class CoTModel(BaseLLM):
             {
                 "role": "assistant",
                 "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
-            },
-            {
-                "role": "user",
-                "content": "What is the conversion of 2 hour to seconds?",
-            },
-            {
-                "role": "assistant",
-                "content": "1 hour = 3600 s, so 2 * 3600 = 7200. <answer>7200</answer>",
-            },
-            {
-                "role": "user",
-                "content": question,
             },
         ]
 

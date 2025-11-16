@@ -1,6 +1,7 @@
 import builtins
 import inspect
 import logging
+import math
 import sys
 import time
 import traceback
@@ -74,6 +75,10 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
                 else:
                     assert isinstance(v, float), f"case returned {v!r} which is not a float!"
 
+                # Handle NaN values - treat as 0 (failed test)
+                if math.isnan(v):
+                    v = 0.0
+
                 n_passed += v
             except TimeoutError as e:
                 msg = str(e)
@@ -89,7 +94,17 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
-        final_score = int(n_passed * score / total + 0.5)
+        # Handle edge cases: division by zero or NaN values
+        if total == 0:
+            final_score = 0
+        else:
+            score_value = n_passed * score / total
+            # Handle NaN values in the final calculation
+            if math.isnan(score_value):
+                final_score = 0
+            else:
+                final_score = int(score_value + 0.5)
+        
         msg = f"{final_score} / {score} {msg}"
 
         return final_score, msg, error

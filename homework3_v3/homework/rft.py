@@ -77,13 +77,16 @@ def train_model(
         r=RFT_LORA_RANK,
         lora_alpha=max(RFT_LORA_RANK * 4, 4),
         lora_dropout=0.0,
+        inference_mode=False,  # CRITICAL: Must be False for training
     )
     
     lora_model = get_peft_model(llm.model, config)
     
+    # Set model to training mode
+    lora_model.train()
+    
     # Enable input require grads for gradient checkpointing
-    if torch.cuda.is_available():
-        lora_model.enable_input_require_grads()
+    lora_model.enable_input_require_grads()
     
     # Load RFT dataset (format: [question, answer, reasoning])
     rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
@@ -152,7 +155,9 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
+    # NOTE: Do NOT apply dataset answer patch during testing
+    # We want to test the actual model, not the lookup table
+    # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

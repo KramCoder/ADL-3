@@ -198,6 +198,56 @@ def train_model(
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
     
+    # Verify labels are correctly set (debug check)
+    sample = tokenized_dataset[0]
+    non_masked_labels = sum(1 for l in sample["labels"] if l != -100)
+    if non_masked_labels == 0:
+        raise ValueError("All labels are masked! Check tokenize function.")
+    print(f"Sample has {non_masked_labels} non-masked labels out of {len(sample['labels'])} total")
+    
+    # Create custom data collator that preserves labels
+    # The default collator might overwrite our carefully constructed labels
+    class CustomDataCollator:
+        def __init__(self, tokenizer, pad_to_multiple_of=None):
+            self.tokenizer = tokenizer
+            self.pad_to_multiple_of = pad_to_multiple_of
+        
+        def __call__(self, examples):
+            # Find max length
+            max_length = max(len(ex["input_ids"]) for ex in examples)
+            if self.pad_to_multiple_of:
+                max_length = ((max_length + self.pad_to_multiple_of - 1) 
+                             // self.pad_to_multiple_of * self.pad_to_multiple_of)
+            
+            # Pad all sequences
+            batch = {}
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
+            
+            input_ids = []
+            attention_mask = []
+            labels = []
+            
+            for ex in examples:
+                ex_input_ids = ex["input_ids"]
+                ex_attention_mask = ex["attention_mask"]
+                ex_labels = ex["labels"]
+                
+                # Pad to max_length
+                padding_length = max_length - len(ex_input_ids)
+                
+                input_ids.append(ex_input_ids + [pad_token_id] * padding_length)
+                attention_mask.append(ex_attention_mask + [0] * padding_length)
+                # Pad labels with -100 (ignore index)
+                labels.append(ex_labels + [-100] * padding_length)
+            
+            batch["input_ids"] = torch.tensor(input_ids, dtype=torch.long)
+            batch["attention_mask"] = torch.tensor(attention_mask, dtype=torch.long)
+            batch["labels"] = torch.tensor(labels, dtype=torch.long)
+            
+            return batch
+    
+    data_collator = CustomDataCollator(tokenizer=llm.tokenizer)
+    
     # Training arguments
     training_args = TrainingArguments(
         output_dir=str(model_path),
@@ -210,13 +260,16 @@ def train_model(
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
+        remove_unused_columns=False,  # Keep all columns including labels
     )
     
-    # Create trainer
+    # Create trainer with label_names to fix the warning
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        data_collator=data_collator,
+        label_names=["labels"],  # Explicitly tell Trainer about labels
     )
     
     # Train

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,103 @@ from .data import Dataset, benchmark
 
 MODEL_NAME = "sft_model"
 DEFAULT_LORA_RANK = 4
+TARGET_EFFECTIVE_BATCH_SIZE = 32
+ENV_PREFIX = "SFT"
+
+
+def _parse_int_env(var_name: str) -> int | None:
+    value = os.environ.get(var_name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _auto_micro_batch_size(target_batch_size: int) -> int:
+    """Pick a reasonable per-device batch size based on available hardware."""
+
+    if torch.cuda.is_available():
+        try:
+            total_mem_gb = torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory / (1024**3)
+        except Exception:
+            total_mem_gb = 0
+        if total_mem_gb < 10:
+            return min(2, target_batch_size)
+        if total_mem_gb < 20:
+            return min(4, target_batch_size)
+        if total_mem_gb < 40:
+            return min(8, target_batch_size)
+        return min(16, target_batch_size)
+    # CPU / MPS training: keep things modest to avoid long steps
+    return min(8, target_batch_size)
+
+
+def determine_batch_hparams(
+    target_batch_size: int = TARGET_EFFECTIVE_BATCH_SIZE,
+    *,
+    per_device_override: int | None = None,
+    grad_accum_override: int | None = None,
+    env_prefix: str = ENV_PREFIX,
+) -> tuple[int, int]:
+    """
+    Return (per_device_batch_size, gradient_accumulation_steps) tuned for stability.
+
+    We keep the effective batch size close to ``target_batch_size`` while ensuring
+    the per-device micro batch fits into memory to prevent fp16 overflows.
+    """
+
+    env_prefix = env_prefix.upper()
+    env_micro = _parse_int_env(f"{env_prefix}_MICRO_BATCH_SIZE")
+    env_grad = _parse_int_env(f"{env_prefix}_GRAD_ACCUM_STEPS")
+
+    micro_batch = per_device_override or env_micro
+    grad_steps = grad_accum_override or env_grad
+
+    if micro_batch is None:
+        micro_batch = _auto_micro_batch_size(target_batch_size)
+    micro_batch = max(1, min(micro_batch, target_batch_size))
+
+    if grad_steps is None:
+        grad_steps = max(1, math.ceil(target_batch_size / micro_batch))
+
+    return micro_batch, grad_steps
+
+
+def determine_precision_flags(env_prefix: str = ENV_PREFIX) -> tuple[bool, bool]:
+    """
+    Decide whether to use fp16 or bf16 mixed precision.
+
+    Returns a tuple ``(use_fp16, use_bf16)``. We prefer bf16 on modern GPUs
+    because it is far more stable for this workload. Users can override the
+    decision by setting ``{ENV_PREFIX}_PRECISION`` to ``fp16``, ``bf16``, or
+    ``fp32``.
+    """
+
+    env_prefix = env_prefix.upper()
+    forced = os.environ.get(f"{env_prefix}_PRECISION")
+    if forced:
+        forced = forced.lower()
+        if forced == "fp32":
+            return False, False
+        if forced == "bf16":
+            return False, torch.cuda.is_available()
+        if forced == "fp16":
+            return torch.cuda.is_available(), False
+
+    if not torch.cuda.is_available():
+        return False, False
+
+    try:
+        major, _ = torch.cuda.get_device_capability()
+    except Exception:
+        major = 0
+
+    supports_bf16 = major >= 8  # Ampere or newer
+    if supports_bf16:
+        return False, True
+    return True, False
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -181,6 +280,11 @@ class TokenizedDataset:
 
 def train_model(
     output_dir: str = MODEL_NAME,
+    num_train_epochs: int = 3,
+    max_steps: int | None = None,
+    target_batch_size: int = TARGET_EFFECTIVE_BATCH_SIZE,
+    per_device_batch_size: int | None = None,
+    grad_accumulation_steps_override: int | None = None,
     **_: Any,
 ):
     from transformers import Trainer, TrainingArguments, default_data_collator
@@ -230,6 +334,25 @@ def train_model(
     if non_masked_labels == 0:
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
+    per_device_batch, grad_accum_steps = determine_batch_hparams(
+        target_batch_size,
+        per_device_override=per_device_batch_size,
+        grad_accum_override=grad_accumulation_steps_override,
+    )
+    fp16, bf16 = determine_precision_flags()
+    effective_batch = per_device_batch * grad_accum_steps
+    print(
+        "Batch config:",
+        f"per_device={per_device_batch}",
+        f"grad_accum={grad_accum_steps}",
+        f"effective≈{effective_batch}",
+    )
+    precision_name = "bf16" if bf16 else "fp16" if fp16 else "fp32"
+    print(f"Precision mode: {precision_name}")
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    
     # Training arguments
     training_args = TrainingArguments(
         output_dir=str(model_path),
@@ -237,16 +360,20 @@ def train_model(
         report_to="tensorboard",
         gradient_checkpointing=True,
         learning_rate=2e-4,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
+        num_train_epochs=num_train_epochs,
+        max_steps=max_steps if max_steps is not None else -1,
+        per_device_train_batch_size=per_device_batch,
+        gradient_accumulation_steps=grad_accum_steps,
         save_strategy="epoch",
-        logging_steps=10,
+        logging_steps=max(1, 10 // grad_accum_steps),
         save_total_limit=1,
         remove_unused_columns=False,  # Keep our custom labels
-        fp16=torch.cuda.is_available(),  # Use fp16 if CUDA available
+        fp16=fp16,
+        bf16=bf16,
         dataloader_pin_memory=False,  # Can help with memory issues
         max_grad_norm=1.0,  # Clip gradients to prevent explosion and NaN
         label_names=["labels"],  # Explicitly specify label field for PeftModel
+        optim="adamw_torch",
     )
     
     # Use default data collator which handles batching correctly

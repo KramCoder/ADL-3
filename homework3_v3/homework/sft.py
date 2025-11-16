@@ -71,22 +71,21 @@ def tokenize(tokenizer, question: str, answer: str):
 
     input_ids = full["input_ids"]
     
-    # Tokenize the question with the trailing space to match how it appears in full_text
-    # This ensures we get the correct boundary between question and answer
+    # Tokenize just the question part with the same settings to find where answer starts
+    # We need to include special tokens to match how they appear in full_text
     question_with_space = f"{question} "
-    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
-    question_len = len(question_tokens)
+    question_full = tokenizer(question_with_space, padding=False, truncation=False, add_special_tokens=True)
+    question_len = len(question_full["input_ids"])
 
     # Create labels: mask out the prompt part (question), keep only answer for training
-    labels = [-100] * question_len + input_ids[question_len:]
+    # Initialize all as -100 (masked)
+    labels = [-100] * len(input_ids)
     
-    # Ensure labels list has the same length as input_ids
-    labels = labels[:len(input_ids)]
-
-    # Mask out padding tokens as well
-    for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
-            labels[i] = -100
+    # Only unmask the answer portion (from question_len onwards)
+    # Copy the actual token IDs for the answer part
+    for i in range(question_len, len(input_ids)):
+        if full["attention_mask"][i] == 1:  # Only if not padding
+            labels[i] = input_ids[i]
 
     full["labels"] = labels
     return full

@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 189, in _run_module_as_main
+  File "<frozen runpy>", line 112, in _get_module_details
+  File "/workspace/homework3_v3/homework/__init__.py", line 1, in <module>
+    from .base_llm import BaseLLM as BaseLLM
+  File "/workspace/homework3_v3/homework/base_llm.py", line 15, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'

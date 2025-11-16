@@ -28,9 +28,9 @@ class BaseLLM:
         # Load model with optimizations
         # Use FP32 for training to avoid numerical instability, FP16 for inference
         if use_fp32_for_training:
-            load_kwargs = {"torch_dtype": torch.float32}
+            load_kwargs = {"dtype": torch.float32}
         else:
-            load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+            load_kwargs = {"dtype": torch.float16 if device == "cuda" else torch.float32}
         
         if device == "cuda" and not use_fp32_for_training:
             # Use memory-efficient attention if available (skip for FP32 training)

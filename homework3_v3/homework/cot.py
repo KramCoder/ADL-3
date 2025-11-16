@@ -1,5 +1,4 @@
 from .base_llm import BaseLLM
-from .conversion_utils import apply_dataset_answer_patch
 
 
 class CoTModel(BaseLLM):

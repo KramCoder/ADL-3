@@ -8,7 +8,6 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import Trainer, TrainingArguments
 
 from .base_llm import BaseLLM
-from .conversion_utils import apply_dataset_answer_patch
 from .data import Dataset, benchmark
 from .sft import DEFAULT_LORA_RANK, TokenizedDataset, _resolve_path, tokenize
 
@@ -45,7 +44,6 @@ def load() -> BaseLLM:
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
 
     return llm
 
@@ -152,7 +150,6 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

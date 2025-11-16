@@ -7,12 +7,13 @@ import torch
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from .base_llm import BaseLLM
-from .conversion_utils import apply_dataset_answer_patch, format_numeric_answer
+from .conversion_utils import format_numeric_answer
 from .data import Dataset, benchmark
 
 
 MODEL_NAME = "sft_model"
 DEFAULT_LORA_RANK = 4
+MAX_SEQ_LENGTH = 256
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -50,46 +51,60 @@ def load() -> BaseLLM:
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
 
     return llm
 
 
-def tokenize(tokenizer, question: str, answer: str):
+def _effective_max_length(tokenizer, requested: int | None = None) -> int:
+    max_len = requested or MAX_SEQ_LENGTH
+    tokenizer_limit = getattr(tokenizer, "model_max_length", None)
+    if isinstance(tokenizer_limit, int) and tokenizer_limit > 0:
+        max_len = min(max_len, tokenizer_limit)
+    return max_len
+
+
+def tokenize(tokenizer, question: str, answer: str, max_length: int | None = None):
     """
     Tokenize a data element.
-    We first append the <EOS> token to the question / answer pair.
-    Then we tokenize and construct the ground truth `labels`.
-    `labels[i] == -100` for the question or masked out parts, since we only want to supervise
-    the answer.
+
+    We build the sequence manually so we know exactly where the question ends
+    and the answer begins, independent of tokenizer merge behaviour. Only the
+    answer span receives supervision; question tokens are masked with -100.
     """
-    full_text = f"{question} {answer}{tokenizer.eos_token}"
 
     tokenizer.padding_side = "right"
-    tokenizer.pad_token = tokenizer.eos_token
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    input_ids = full["input_ids"]
-    
-    # Tokenize the question with the trailing space to match how it appears in full_text
-    # This ensures we get the correct boundary between question and answer
-    question_with_space = f"{question} "
-    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
-    question_len = len(question_tokens)
+    max_length = _effective_max_length(tokenizer, max_length)
 
-    # Create labels: mask out the prompt part (question), keep only answer for training
-    labels = [-100] * question_len + input_ids[question_len:]
-    
-    # Ensure labels list has the same length as input_ids
-    labels = labels[:len(input_ids)]
+    prompt_ids = tokenizer(question.strip(), add_special_tokens=False)["input_ids"]
+    answer_text = f"{answer.strip()}{tokenizer.eos_token or ''}"
+    answer_ids = tokenizer(answer_text, add_special_tokens=False)["input_ids"]
 
-    # Mask out padding tokens as well
-    for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
-            labels[i] = -100
+    if len(answer_ids) >= max_length:
+        answer_ids = answer_ids[-max_length:]
+        prompt_ids = []
+    else:
+        prompt_budget = max_length - len(answer_ids)
+        prompt_ids = prompt_ids[:prompt_budget]
 
-    full["labels"] = labels
-    return full
+    input_ids = prompt_ids + answer_ids
+    labels = [-100] * len(prompt_ids) + answer_ids
+    attention_mask = [1] * len(input_ids)
+
+    pad_len = max_length - len(input_ids)
+    if pad_len > 0:
+        pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+        input_ids.extend([pad_id] * pad_len)
+        attention_mask.extend([0] * pad_len)
+        labels.extend([-100] * pad_len)
+
+    return {
+        "input_ids": input_ids[:max_length],
+        "attention_mask": attention_mask[:max_length],
+        "labels": labels[:max_length],
+    }
 
 
 def format_example(prompt: str, answer: float) -> dict[str, str]:
@@ -193,7 +208,6 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

@@ -64,9 +64,12 @@ class BaseLLM:
         """
         Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
-        You don't need to change this function for now.
+        
+        For SFT training, we need to match the format seen during training:
+        Training format: "question <answer>value</answer>"
+        Inference format: "question <answer>" (model completes the rest)
         """
-        return question
+        return f"{question.strip()} <answer>"
 
     def parse_answer(self, answer: str) -> float:
         """

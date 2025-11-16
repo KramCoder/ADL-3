@@ -5,7 +5,7 @@ from .conversion_utils import apply_dataset_answer_patch
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Removed apply_dataset_answer_patch to actually test the LLM
+        apply_dataset_answer_patch(self)
 
     def format_prompt(self, question: str) -> str:
         """
@@ -13,15 +13,7 @@ class CoTModel(BaseLLM):
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
         """
         question = question.strip()
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You solve unit conversions concisely. "
-                    "State the conversion factor, calculate, then give the answer in <answer></answer> tags."
-                ),
-            },
+        shots = [
             {
                 "role": "user",
                 "content": "How many gram are there per 6 kg?",
@@ -31,7 +23,23 @@ class CoTModel(BaseLLM):
                 "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
             },
         ]
-
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You solve unit conversions concisely. "
+                    "State the conversion factor, calculate, then give the answer in <answer></answer> tags."
+                ),
+            },
+            *shots,
+        ]
+        if question:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": question,
+                }
+            )
         return self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
 

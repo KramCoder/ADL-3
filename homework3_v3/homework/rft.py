@@ -120,6 +120,8 @@ def train_model(
         report_to="tensorboard",
         gradient_checkpointing=True,
         learning_rate=2e-4,
+        lr_scheduler_type="linear",  # Explicit linear decay scheduler
+        warmup_steps=0,  # No warmup for simplicity
         num_train_epochs=3,
         per_device_train_batch_size=32,
         save_strategy="epoch",
@@ -158,6 +160,19 @@ def test_model(ckpt_path: str):
     # NOTE: Do NOT apply dataset answer patch during testing
     # We want to test the actual model, not the lookup table
     # apply_dataset_answer_patch(llm)
+
+    # Debug: Test a single question to see what the model generates
+    if len(testset) > 0:
+        test_question = testset[0][0]
+        test_answer = testset[0][1]
+        formatted = llm.format_prompt(test_question)
+        generated = llm.batched_generate([test_question])[0]
+        parsed = llm.parse_answer(generated)
+        print(f"\nDebug - Test question: {test_question}")
+        print(f"Debug - Formatted prompt: {formatted}")
+        print(f"Debug - Generated: {generated}")
+        print(f"Debug - Parsed answer: {parsed} (expected: {test_answer})")
+        print(f"Debug - Full generation (with prompt): {formatted}{generated}\n")
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

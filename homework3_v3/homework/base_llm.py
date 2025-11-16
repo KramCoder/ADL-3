@@ -77,8 +77,36 @@ class BaseLLM:
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
+            # First try to find the opening tag
+            if "<answer>" not in answer:
+                return float("nan")
+            
+            # Extract everything after <answer>
+            after_open = answer.split("<answer>", 1)[1]
+            
+            # Try to find closing tag
+            if "</answer>" in after_open:
+                # Extract value between tags
+                value_str = after_open.split("</answer>")[0].strip()
+            else:
+                # No closing tag - try to extract a number from what follows <answer>
+                # Look for a number (possibly with decimal point) followed by whitespace or end
+                import re
+                match = re.search(r'([-+]?\d*\.?\d+)', after_open)
+                if match:
+                    value_str = match.group(1)
+                else:
+                    # Try to extract first token that looks like a number
+                    # Split by whitespace and try to parse first token
+                    tokens = after_open.split()
+                    if tokens:
+                        value_str = tokens[0]
+                    else:
+                        return float("nan")
+            
+            # Try to parse as float
+            return float(value_str)
+        except (IndexError, ValueError, AttributeError):
             return float("nan")
 
     def generate(self, prompt: str) -> str:
@@ -108,7 +136,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=30,  # Optimized for non-batched test
+                max_new_tokens=50,  # Increased to ensure enough space for answer format
                 min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -196,7 +224,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 40,  # Balanced for speed and quality
+            "max_new_tokens": 50,  # Increased to ensure enough space for answer format
             "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,

@@ -69,6 +69,8 @@ def tokenize(tokenizer, question: str, answer: str):
         tokenizer.pad_token = tokenizer.eos_token
     
     # Format the full text: question + answer + EOS
+    # Ensure we match the inference format: "question <answer>value</answer>"
+    # During inference, we use "question <answer>" and model should generate "value</answer>"
     full_text = f"{question} {answer}{tokenizer.eos_token}"
     
     # Tokenize the full text (this is what the model will see)
@@ -84,10 +86,11 @@ def tokenize(tokenizer, question: str, answer: str):
     input_ids = encoded["input_ids"]
     attention_mask = encoded["attention_mask"]
     
-    # Now find where the question ends by tokenizing question separately
-    question_with_space = f"{question} "
+    # Now find where the question ends by tokenizing question + "<answer>" separately
+    # This matches the inference format where we use "question <answer>"
+    question_with_answer_tag = f"{question} <answer>"
     question_encoded = tokenizer(
-        question_with_space,
+        question_with_answer_tag,
         add_special_tokens=True,
         return_tensors=None,
     )
@@ -336,6 +339,8 @@ def train_model(
         "report_to": "tensorboard",
         "gradient_checkpointing": True,
         "learning_rate": 2e-4,
+        "lr_scheduler_type": "linear",  # Explicit linear decay scheduler
+        "warmup_steps": 0,  # No warmup for simplicity
         "per_device_train_batch_size": 32,
         "logging_steps": 10,
         "save_total_limit": 1,
@@ -453,6 +458,19 @@ def test_model(ckpt_path: str):
     llm.model.eval()
     # Don't apply dataset answer patch during testing - we want to test actual model
     # apply_dataset_answer_patch(llm)
+
+    # Debug: Test a single question to see what the model generates
+    if len(testset) > 0:
+        test_question = testset[0][0]
+        test_answer = testset[0][1]
+        formatted = llm.format_prompt(test_question)
+        generated = llm.batched_generate([test_question])[0]
+        parsed = llm.parse_answer(generated)
+        print(f"\nDebug - Test question: {test_question}")
+        print(f"Debug - Formatted prompt: {formatted}")
+        print(f"Debug - Generated: {generated}")
+        print(f"Debug - Parsed answer: {parsed} (expected: {test_answer})")
+        print(f"Debug - Full generation (with prompt): {formatted}{generated}\n")
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

@@ -330,7 +330,7 @@ def train_model(
     # Override compute_loss to ensure loss is computed correctly and handle edge cases
     original_compute_loss = trainer.compute_loss
     
-    def safe_compute_loss(self, model, inputs, return_outputs=False):
+    def safe_compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Compute loss with NaN and zero loss protection."""
         # Get labels
         labels = inputs.get("labels")
@@ -350,7 +350,7 @@ def train_model(
         
         # Compute loss normally using the original method
         try:
-            loss = original_compute_loss(model, inputs, return_outputs)
+            loss = original_compute_loss(model, inputs, return_outputs, **kwargs)
             if return_outputs:
                 loss, outputs = loss
             else:

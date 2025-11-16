@@ -181,6 +181,7 @@ class TokenizedDataset:
 
 def train_model(
     output_dir: str = MODEL_NAME,
+    max_steps: int | None = None,
     **_: Any,
 ):
     from transformers import Trainer, TrainingArguments, default_data_collator, TrainerCallback
@@ -188,8 +189,8 @@ def train_model(
     
     # Custom callback to validate gradients and compute proper gradient norms
     class GradientNormCallback(TrainerCallback):
-        def on_step_end(self, args, state, control, model=None, **kwargs):
-            """Validate gradients after backward pass but before optimizer step"""
+        def on_backward(self, args, state, control, model=None, **kwargs):
+            """Validate gradients right after backward pass, before clipping/optimizer step"""
             if model is not None:
                 # Check all gradients for NaN/Inf before clipping
                 has_nan = False
@@ -233,11 +234,16 @@ def train_model(
         def on_log(self, args, state, control, logs=None, **kwargs):
             """Update logs with computed gradient norm"""
             if logs is not None:
-                # Use our computed norm if available, otherwise keep the original
+                # Use our computed norm if available
                 if hasattr(state, 'last_grad_norm'):
-                    logs['grad_norm'] = state.last_grad_norm
+                    # Only update if we have a valid value
+                    if not (np.isnan(state.last_grad_norm) or np.isinf(state.last_grad_norm)):
+                        logs['grad_norm'] = state.last_grad_norm
+                    else:
+                        # If we had NaN/Inf, log 0.0 to indicate issue was handled
+                        logs['grad_norm'] = 0.0
                 elif 'grad_norm' not in logs:
-                    # Fallback: compute from model if available
+                    # Fallback: compute from model if available (though gradients may be zeroed by now)
                     model = kwargs.get('model')
                     if model is not None:
                         total_norm = 0.0
@@ -324,35 +330,43 @@ def train_model(
             print("Using float16 for training (with loss scaling)")
     
     # Training arguments with improved stability
-    training_args = TrainingArguments(
-        output_dir=str(model_path),
-        logging_dir=str(model_path),
-        report_to="tensorboard",
-        gradient_checkpointing=True,
-        learning_rate=2e-4,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
-        save_strategy="epoch",
-        logging_steps=10,
-        save_total_limit=1,
-        remove_unused_columns=False,  # Keep our custom labels
-        bf16=use_bf16,  # Use bf16 if available (more stable)
-        fp16=use_fp16,  # Fallback to fp16 if bf16 not available
-        fp16_full_eval=False,  # Use full precision for evaluation
-        dataloader_pin_memory=False,  # Can help with memory issues
-        max_grad_norm=1.0,  # Clip gradients to prevent explosion
-        label_names=["labels"],  # Explicitly specify label field for PeftModel
+    training_args_dict = {
+        "output_dir": str(model_path),
+        "logging_dir": str(model_path),
+        "report_to": "tensorboard",
+        "gradient_checkpointing": True,
+        "learning_rate": 2e-4,
+        "per_device_train_batch_size": 32,
+        "logging_steps": 10,
+        "save_total_limit": 1,
+        "remove_unused_columns": False,  # Keep our custom labels
+        "bf16": use_bf16,  # Use bf16 if available (more stable)
+        "fp16": use_fp16,  # Fallback to fp16 if bf16 not available
+        "fp16_full_eval": False,  # Use full precision for evaluation
+        "dataloader_pin_memory": False,  # Can help with memory issues
+        "max_grad_norm": 1.0,  # Clip gradients to prevent explosion
+        "label_names": ["labels"],  # Explicitly specify label field for PeftModel
         # Additional stability settings
-        dataloader_num_workers=0,  # Avoid multiprocessing issues
-        ddp_find_unused_parameters=False,  # Faster training
-    )
+        "dataloader_num_workers": 0,  # Avoid multiprocessing issues
+        "ddp_find_unused_parameters": False,  # Faster training
+    }
+    
+    # Set epochs or max_steps (not both)
+    if max_steps is not None:
+        training_args_dict["max_steps"] = max_steps
+        training_args_dict["save_strategy"] = "no"
+    else:
+        training_args_dict["num_train_epochs"] = 3
+        training_args_dict["save_strategy"] = "epoch"
+    
+    training_args = TrainingArguments(**training_args_dict)
     
     # Use default data collator which handles batching correctly
     data_collator = default_data_collator
     
     # Custom Trainer class to ensure stable loss computation
     class StableTrainer(Trainer):
-        def compute_loss(self, model, inputs, return_outputs=False):
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
             """
             Custom loss computation with validation to prevent NaN/Inf.
             """
@@ -402,10 +416,26 @@ def train_model(
     
     # Train
     print("Starting training...")
-    trainer.train()
+    train_result = trainer.train()
+    
+    # Print training metrics summary
+    print("\n" + "=" * 60)
+    print("Training Summary:")
+    print("=" * 60)
+    if hasattr(train_result, 'metrics'):
+        for key, value in train_result.metrics.items():
+            if isinstance(value, (int, float)):
+                if key == 'train_loss':
+                    print(f"Final Loss: {value:.6f}")
+                elif key == 'train_grad_norm':
+                    print(f"Final Gradient Norm: {value:.6f}")
+                elif 'learning_rate' in key:
+                    print(f"Learning Rate: {value:.2e}")
+                else:
+                    print(f"{key}: {value}")
     
     # Save the final model
-    print(f"Saving model to {model_path}")
+    print(f"\nSaving model to {model_path}")
     trainer.save_model(str(model_path))
     
     # Test the model

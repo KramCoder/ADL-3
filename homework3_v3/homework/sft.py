@@ -70,11 +70,20 @@ def tokenize(tokenizer, question: str, answer: str):
     full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
 
     input_ids = full["input_ids"]
-    question_len = len(tokenizer(question)["input_ids"])
+    
+    # Tokenize the question with the trailing space to match how it appears in full_text
+    # This ensures we get the correct boundary between question and answer
+    question_with_space = f"{question} "
+    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
+    question_len = len(question_tokens)
 
-    # Create labels: mask out the prompt part
+    # Create labels: mask out the prompt part (question), keep only answer for training
     labels = [-100] * question_len + input_ids[question_len:]
+    
+    # Ensure labels list has the same length as input_ids
+    labels = labels[:len(input_ids)]
 
+    # Mask out padding tokens as well
     for i in range(len(labels)):
         if full["attention_mask"][i] == 0:
             labels[i] = -100
@@ -138,8 +147,8 @@ def train_model(
     lora_model = get_peft_model(llm.model, config)
     
     # Enable input require grads for gradient checkpointing
-    if torch.cuda.is_available():
-        lora_model.enable_input_require_grads()
+    # This is essential for training to work properly with gradient checkpointing
+    lora_model.enable_input_require_grads()
     
     # Prepare dataset
     train_dataset = Dataset("train")

@@ -63,20 +63,91 @@ def tokenize(tokenizer, question: str, answer: str):
     `labels[i] == -100` for the question or masked out parts, since we only want to supervise
     the answer.
     """
-    full_text = f"{question} {answer}{tokenizer.eos_token}"
-
     tokenizer.padding_side = "right"
-    tokenizer.pad_token = tokenizer.eos_token
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Tokenize the full text (question + space + answer + eos)
+    full_text = f"{question} {answer}{tokenizer.eos_token}"
+    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128, return_tensors=None)
 
     input_ids = full["input_ids"]
-    question_len = len(tokenizer(question)["input_ids"])
-
-    # Create labels: mask out the prompt part
-    labels = [-100] * question_len + input_ids[question_len:]
-
+    attention_mask = full["attention_mask"]
+    
+    # Find where the question ends by matching tokens
+    # Tokenize question with space to match the format in full_text
+    question_with_space = f"{question} "
+    
+    # Try with special tokens first (to match full tokenization)
+    # Use same max_length and truncation to handle long questions
+    question_tokens_with_special = tokenizer(
+        question_with_space, 
+        add_special_tokens=True, 
+        max_length=128,
+        truncation=True,
+        return_tensors=None
+    )["input_ids"]
+    question_tokens_no_special = tokenizer(
+        question_with_space, 
+        add_special_tokens=False,
+        max_length=128,
+        truncation=True,
+        return_tensors=None
+    )["input_ids"]
+    
+    # Find where question tokens end in the full sequence
+    answer_start_idx = len(input_ids)  # Default: no answer (all masked)
+    
+    # First try matching with special tokens (most common case)
+    if len(question_tokens_with_special) <= len(input_ids):
+        # Check if tokens match from the start
+        if all(
+            i < len(input_ids) and question_tokens_with_special[i] == input_ids[i]
+            for i in range(len(question_tokens_with_special))
+        ):
+            answer_start_idx = len(question_tokens_with_special)
+    
+    # If that didn't work, try matching without special tokens
+    # (accounting for potential BOS token at position 0)
+    if answer_start_idx == len(input_ids) and len(question_tokens_no_special) <= len(input_ids):
+        # Try matching from position 0
+        if len(question_tokens_no_special) <= len(input_ids):
+            if all(
+                i < len(input_ids) and question_tokens_no_special[i] == input_ids[i]
+                for i in range(len(question_tokens_no_special))
+            ):
+                answer_start_idx = len(question_tokens_no_special)
+            # Try matching from position 1 (if there's a BOS token)
+            elif len(question_tokens_no_special) < len(input_ids):
+                if all(
+                    i < len(input_ids) and question_tokens_no_special[i] == input_ids[i + 1]
+                    for i in range(len(question_tokens_no_special))
+                ):
+                    answer_start_idx = len(question_tokens_no_special) + 1
+    
+    # Fallback: if no match found and question seems short, use length-based heuristic
+    # This handles edge cases where tokenization might differ slightly
+    if answer_start_idx == len(input_ids):
+        # Estimate question length (rough heuristic)
+        # Most questions should be shorter than the sequence
+        estimated_q_len = min(len(question_tokens_no_special), len(input_ids) - 10)
+        if estimated_q_len > 0 and estimated_q_len < len(input_ids):
+            # Use estimated length as fallback (better than masking everything)
+            answer_start_idx = estimated_q_len
+    
+    # Create labels: mask out the question part, keep the answer part
+    labels = [-100] * len(input_ids)
+    
+    # Set labels for answer tokens (everything after question)
+    for i in range(answer_start_idx, len(input_ids)):
+        if attention_mask[i] == 1:  # Only set labels for non-padded tokens
+            labels[i] = input_ids[i]
+        else:
+            labels[i] = -100
+    
+    # Ensure all padded tokens are masked
     for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
+        if attention_mask[i] == 0:
             labels[i] = -100
 
     full["labels"] = labels
@@ -164,6 +235,7 @@ def train_model(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        label_names=["labels"],  # Explicitly specify label column name
     )
     
     # Train

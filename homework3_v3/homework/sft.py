@@ -70,34 +70,49 @@ def tokenize(tokenizer, question: str, answer: str):
         tokenizer.pad_token = tokenizer.eos_token
     
     # Tokenize the full text
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
+    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128, return_tensors=None)
     input_ids = full["input_ids"]
     
     # Tokenize just the question part to find where it ends
     # We need to match exactly how it appears in the full text
+    # Use the same settings as the full text tokenization
     question_text = f"{question} "
     question_encoded = tokenizer(question_text, add_special_tokens=True, return_tensors=None)
     question_token_ids = question_encoded["input_ids"]
-    question_len = len(question_token_ids)
     
     # The question tokens should appear at the start of the full sequence
-    # Find the exact match
+    # Find the exact match by comparing token sequences
     question_len = 0
     if len(question_token_ids) > 0 and len(question_token_ids) <= len(input_ids):
-        # Check if the first question_len tokens match exactly
+        # Check if the first tokens match exactly (accounting for special tokens)
+        # Try matching from the start
         if input_ids[:len(question_token_ids)] == question_token_ids:
             question_len = len(question_token_ids)
         else:
-            # Try to find where question tokens appear (with small offset for special tokens)
-            for offset in range(min(2, len(input_ids) - len(question_token_ids) + 1)):
-                if input_ids[offset:offset+len(question_token_ids)] == question_token_ids:
-                    question_len = offset + len(question_token_ids)
+            # The tokenizer might add special tokens differently, so try to find the match
+            # Check if question tokens appear anywhere in the first part of input_ids
+            max_search_len = min(len(input_ids), len(question_token_ids) + 5)
+            for start_idx in range(max_search_len - len(question_token_ids) + 1):
+                if input_ids[start_idx:start_idx+len(question_token_ids)] == question_token_ids:
+                    question_len = start_idx + len(question_token_ids)
                     break
             
             # If still no match, use the question token length as estimate
-            # This handles cases where tokenization differs slightly
+            # This handles cases where tokenization differs slightly due to context
             if question_len == 0:
-                question_len = len(question_token_ids)
+                # Fallback: assume question tokens match from the start (minus any special tokens)
+                # Most tokenizers add special tokens at the start, so we check from index 1
+                if len(input_ids) > 1 and len(question_token_ids) > 0:
+                    # Try matching from index 1 (after potential BOS token)
+                    if len(input_ids) > len(question_token_ids) + 1:
+                        if input_ids[1:1+len(question_token_ids)] == question_token_ids:
+                            question_len = 1 + len(question_token_ids)
+                        else:
+                            question_len = len(question_token_ids)  # Use as estimate
+                    else:
+                        question_len = len(question_token_ids)
+                else:
+                    question_len = len(question_token_ids)
     
     # Ensure we have room for at least some answer tokens
     if question_len >= len(input_ids):
@@ -169,7 +184,7 @@ def train_model(
     output_dir: str = MODEL_NAME,
     **_: Any,
 ):
-    from transformers import Trainer, TrainingArguments
+    from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
     
     model_path = _resolve_path(output_dir)
     
@@ -194,9 +209,34 @@ def train_model(
     # This is essential for training to work properly with gradient checkpointing
     lora_model.enable_input_require_grads()
     
+    # Ensure the model is configured to compute loss
+    # For causal LM, the model should automatically handle label shifting
+    # Disable cache for training (required when gradient checkpointing is enabled)
+    if hasattr(lora_model, 'config'):
+        lora_model.config.use_cache = False
+    # Also set on base model if accessible
+    if hasattr(lora_model, 'base_model') and hasattr(lora_model.base_model, 'config'):
+        lora_model.base_model.config.use_cache = False
+    if hasattr(lora_model, 'get_base_model'):
+        base_model = lora_model.get_base_model()
+        if hasattr(base_model, 'config'):
+            base_model.config.use_cache = False
+    
     # Prepare dataset
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    
+    # Data collator - sequences are already padded to max_length in tokenize()
+    # So we just need to stack them into tensors
+    def data_collator(features):
+        # Features is a list of dicts from tokenize()
+        batch = {}
+        # Get all keys from first feature
+        keys = features[0].keys()
+        for key in keys:
+            # Convert lists to tensors and stack
+            batch[key] = torch.tensor([f[key] for f in features], dtype=torch.long)
+        return batch
     
     # Training arguments
     training_args = TrainingArguments(
@@ -210,6 +250,8 @@ def train_model(
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
+        remove_unused_columns=False,  # Keep all columns including labels
+        label_names=["labels"],  # Explicitly tell Trainer about labels field
     )
     
     # Create trainer
@@ -217,6 +259,7 @@ def train_model(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        data_collator=data_collator,
     )
     
     # Train

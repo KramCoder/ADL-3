@@ -63,33 +63,59 @@ def tokenize(tokenizer, question: str, answer: str):
     `labels[i] == -100` for the question or masked out parts, since we only want to supervise
     the answer.
     """
-    full_text = f"{question} {answer}{tokenizer.eos_token}"
-
+    # Set up tokenizer
     tokenizer.padding_side = "right"
-    tokenizer.pad_token = tokenizer.eos_token
-    full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
-
-    input_ids = full["input_ids"]
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     
-    # Tokenize the question with the trailing space to match how it appears in full_text
-    # This ensures we get the correct boundary between question and answer
-    question_with_space = f"{question} "
-    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
-    question_len = len(question_tokens)
-
-    # Create labels: mask out the prompt part (question), keep only answer for training
-    labels = [-100] * question_len + input_ids[question_len:]
+    # Tokenize question and answer separately to have exact control over labels
+    question_text = f"{question} "
+    answer_text = f"{answer}{tokenizer.eos_token}"
     
-    # Ensure labels list has the same length as input_ids
-    labels = labels[:len(input_ids)]
-
-    # Mask out padding tokens as well
-    for i in range(len(labels)):
-        if full["attention_mask"][i] == 0:
-            labels[i] = -100
-
-    full["labels"] = labels
-    return full
+    # Tokenize question (with special tokens)
+    question_encoded = tokenizer(question_text, add_special_tokens=True, return_attention_mask=False)
+    question_ids = question_encoded["input_ids"]
+    
+    # Tokenize answer (without special tokens since they're already in question)
+    answer_encoded = tokenizer(answer_text, add_special_tokens=False, return_attention_mask=False)
+    answer_ids = answer_encoded["input_ids"]
+    
+    # Combine: question + answer
+    input_ids = question_ids + answer_ids
+    
+    # Truncate if too long (keep at least some answer tokens)
+    max_length = 128
+    question_len = len(question_ids)
+    if len(input_ids) > max_length:
+        # Make sure we keep at least some answer tokens
+        # Keep at least 10 tokens for the answer if possible
+        min_answer_tokens = min(10, len(answer_ids))
+        max_question_len = max_length - min_answer_tokens
+        if question_len > max_question_len:
+            question_len = max_question_len
+            question_ids = question_ids[:max_question_len]
+        remaining = max_length - question_len
+        answer_ids = answer_ids[:remaining]
+        input_ids = question_ids + answer_ids
+    
+    # Create labels: mask question, keep answer
+    # Labels should be the same length as input_ids, with -100 for question tokens
+    labels = [-100] * question_len + answer_ids
+    
+    # Pad to max_length
+    padding_length = max_length - len(input_ids)
+    if padding_length > 0:
+        input_ids = input_ids + [tokenizer.pad_token_id] * padding_length
+        attention_mask = [1] * (max_length - padding_length) + [0] * padding_length
+        labels = labels + [-100] * padding_length
+    else:
+        attention_mask = [1] * len(input_ids)
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
 
 
 def format_example(prompt: str, answer: float) -> dict[str, str]:
@@ -150,6 +176,13 @@ def train_model(
     # This is essential for training to work properly with gradient checkpointing
     lora_model.enable_input_require_grads()
     
+    # Ensure model is in training mode
+    lora_model.train()
+    
+    # Print model info for debugging
+    trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {trainable_params:,}")
+    
     # Prepare dataset
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
@@ -166,6 +199,10 @@ def train_model(
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
+        warmup_steps=0,  # No warmup for simplicity
+        lr_scheduler_type="linear",  # Linear learning rate decay
+        fp16=False,  # Disable fp16 to avoid potential NaN issues
+        dataloader_pin_memory=False,
     )
     
     # Create trainer
@@ -193,7 +230,8 @@ def test_model(ckpt_path: str):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    apply_dataset_answer_patch(llm)
+    # Don't apply dataset answer patch - we want to test the actual model performance
+    # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

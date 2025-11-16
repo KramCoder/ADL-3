@@ -10,38 +10,50 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 
 
 class BaseLLM:
-    def __init__(self, checkpoint=checkpoint):
+    def __init__(self, checkpoint=checkpoint, *, for_training: bool = False, torch_dtype: torch.dtype | None = None):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-        
+        self.device = device
+        self._for_training = for_training
+
+        preferred_dtype = torch_dtype
+        if preferred_dtype is None:
+            if device == "cuda" and not for_training:
+                preferred_dtype = torch.float16
+            else:
+                preferred_dtype = torch.float32
+
         # Load model with optimizations
-        load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+        load_kwargs = {"torch_dtype": preferred_dtype}
         if device == "cuda":
             # Use memory-efficient attention if available
             load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
-        
+
         try:
             self.model = AutoModelForCausalLM.from_pretrained(checkpoint, **load_kwargs).to(device)
         except Exception:
             # Fallback if sdpa not available
             load_kwargs.pop("attn_implementation", None)
             self.model = AutoModelForCausalLM.from_pretrained(checkpoint, **load_kwargs).to(device)
-        
-        self.model.eval()  # Set model to evaluation mode for better performance
-        self.device = device
-        
+
+        if for_training:
+            self.model.train()
+        else:
+            self.model.eval()  # Set model to evaluation mode for better performance
+
         # Set up pad token if not present
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
+
         # Additional optimizations for faster inference
         if device == "cuda":
             # Enable cudnn benchmarking for faster inference
             torch.backends.cudnn.benchmark = True
-        
-        # Warm up the model with a dummy generation to ensure consistent performance
-        with torch.inference_mode():
-            dummy_input = self.tokenizer("test", return_tensors="pt").to(device)
-            _ = self.model.generate(**dummy_input, max_new_tokens=1, do_sample=False)
+
+        # Warm up the model with a dummy generation to ensure consistent performance when not training
+        if not for_training:
+            with torch.inference_mode():
+                dummy_input = self.tokenizer("test", return_tensors="pt").to(device)
+                _ = self.model.generate(**dummy_input, max_new_tokens=1, do_sample=False)
 
     def format_prompt(self, question: str) -> str:
         """

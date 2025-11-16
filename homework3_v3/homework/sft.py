@@ -125,7 +125,7 @@ def train_model(
     model_path = _resolve_path(output_dir)
     
     # Load base model and create LoRA adapter
-    llm = BaseLLM()
+    llm = BaseLLM(for_training=True)
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",

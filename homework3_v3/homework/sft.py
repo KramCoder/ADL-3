@@ -352,9 +352,10 @@ def train_model(
     
     # Custom Trainer class to ensure stable loss computation
     class StableTrainer(Trainer):
-        def compute_loss(self, model, inputs, return_outputs=False):
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
             """
             Custom loss computation with validation to prevent NaN/Inf.
+            Accepts additional kwargs for compatibility with newer transformers versions.
             """
             labels = inputs.get("labels")
             outputs = model(**inputs)

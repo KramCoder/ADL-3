@@ -89,7 +89,16 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
-        final_score = int(n_passed * score / total + 0.5)
+        # Handle NaN or division by zero cases
+        if total == 0:
+            final_score = 0
+        else:
+            raw_score = n_passed * score / total
+            # Check for NaN and convert to 0
+            if raw_score != raw_score:  # NaN check (NaN != NaN is True)
+                final_score = 0
+            else:
+                final_score = int(raw_score + 0.5)
         msg = f"{final_score} / {score} {msg}"
 
         return final_score, msg, error

@@ -66,27 +66,67 @@ def tokenize(tokenizer, question: str, answer: str):
     full_text = f"{question} {answer}{tokenizer.eos_token}"
 
     tokenizer.padding_side = "right"
-    tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Tokenize the full text
     full = tokenizer(full_text, padding="max_length", truncation=True, max_length=128)
-
     input_ids = full["input_ids"]
     
-    # Tokenize the question with the trailing space to match how it appears in full_text
-    # This ensures we get the correct boundary between question and answer
-    question_with_space = f"{question} "
-    question_tokens = tokenizer(question_with_space, add_special_tokens=False)["input_ids"]
-    question_len = len(question_tokens)
-
-    # Create labels: mask out the prompt part (question), keep only answer for training
-    labels = [-100] * question_len + input_ids[question_len:]
+    # Tokenize just the question part to find where it ends
+    # We need to match exactly how it appears in the full text
+    question_text = f"{question} "
+    question_encoded = tokenizer(question_text, add_special_tokens=True, return_tensors=None)
+    question_token_ids = question_encoded["input_ids"]
+    question_len = len(question_token_ids)
+    
+    # The question tokens should appear at the start of the full sequence
+    # Find the exact match
+    question_len = 0
+    if len(question_token_ids) > 0 and len(question_token_ids) <= len(input_ids):
+        # Check if the first question_len tokens match exactly
+        if input_ids[:len(question_token_ids)] == question_token_ids:
+            question_len = len(question_token_ids)
+        else:
+            # Try to find where question tokens appear (with small offset for special tokens)
+            for offset in range(min(2, len(input_ids) - len(question_token_ids) + 1)):
+                if input_ids[offset:offset+len(question_token_ids)] == question_token_ids:
+                    question_len = offset + len(question_token_ids)
+                    break
+            
+            # If still no match, use the question token length as estimate
+            # This handles cases where tokenization differs slightly
+            if question_len == 0:
+                question_len = len(question_token_ids)
+    
+    # Ensure we have room for at least some answer tokens
+    if question_len >= len(input_ids):
+        question_len = max(0, len(input_ids) - 10)  # Leave some room for answer
+    
+    # Create labels: mask out the question part, keep answer for training
+    labels = [-100] * question_len
+    if question_len < len(input_ids):
+        # Copy the answer tokens (and EOS) as labels
+        labels.extend(input_ids[question_len:])
     
     # Ensure labels list has the same length as input_ids
     labels = labels[:len(input_ids)]
-
+    
     # Mask out padding tokens as well
     for i in range(len(labels)):
         if full["attention_mask"][i] == 0:
             labels[i] = -100
+    
+    # Validation: ensure we have at least some non-masked labels
+    # If all labels are masked, something went wrong
+    non_masked_count = sum(1 for l in labels if l != -100)
+    if non_masked_count == 0:
+        # Fallback: if everything is masked, at least train on the last few tokens
+        # This shouldn't happen, but provides a safety net
+        if len(input_ids) > 5:
+            for i in range(max(question_len, len(input_ids) - 5), len(input_ids)):
+                if full["attention_mask"][i] == 1:
+                    labels[i] = input_ids[i]
 
     full["labels"] = labels
     return full

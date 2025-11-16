@@ -245,6 +245,8 @@ def train_model(
         remove_unused_columns=False,  # Keep our custom labels
         fp16=torch.cuda.is_available(),  # Use fp16 if CUDA available
         dataloader_pin_memory=False,  # Can help with memory issues
+        max_grad_norm=1.0,  # Clip gradients to prevent explosion and NaN
+        label_names=["labels"],  # Explicitly specify label field for PeftModel
     )
     
     # Use default data collator which handles batching correctly

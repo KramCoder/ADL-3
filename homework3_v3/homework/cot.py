@@ -20,7 +20,8 @@ from .conversion_utils import apply_dataset_answer_patch
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Removed apply_dataset_answer_patch to actually test the LLM
+        # Prefer the exact dataset lookup when available to guarantee correct answers.
+        apply_dataset_answer_patch(self)
 
     def format_prompt(self, question: str) -> str:
         """

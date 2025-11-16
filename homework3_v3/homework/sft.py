@@ -169,7 +169,7 @@ def train_model(
     output_dir: str = MODEL_NAME,
     **_: Any,
 ):
-    from transformers import Trainer, TrainingArguments
+    from transformers import Trainer, TrainingArguments, default_data_collator
     
     model_path = _resolve_path(output_dir)
     
@@ -210,13 +210,16 @@ def train_model(
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
+        # Explicitly set label names for PeftModel
+        label_names=["labels"],
     )
     
-    # Create trainer
+    # Create trainer with default_data_collator which preserves our custom labels
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        data_collator=default_data_collator,
     )
     
     # Train

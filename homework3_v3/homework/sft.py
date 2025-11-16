@@ -188,8 +188,9 @@ def train_model(
     model_path = _resolve_path(output_dir)
     model_path.mkdir(parents=True, exist_ok=True)
     
-    # Load base model
-    llm = BaseLLM()
+    # Load base model in FP32 for training to avoid NaN gradients
+    # FP16 model + FP16 training causes numerical instability
+    llm = BaseLLM(use_fp32_for_training=True)
     
     # Ensure model is in eval mode initially (BaseLLM sets this)
     # We'll set to train mode after applying LoRA
@@ -231,6 +232,8 @@ def train_model(
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
     # Training arguments
+    # NOTE: Disable FP16 to prevent NaN gradients. FP16 combined with the model
+    # being loaded in FP16 causes numerical instability.
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
@@ -243,9 +246,10 @@ def train_model(
         logging_steps=10,
         save_total_limit=1,
         remove_unused_columns=False,  # Keep our custom labels
-        fp16=torch.cuda.is_available(),  # Use fp16 if CUDA available
+        fp16=False,  # Disabled to prevent NaN gradients
+        bf16=False,  # Explicitly disable bf16 as well
         dataloader_pin_memory=False,  # Can help with memory issues
-        max_grad_norm=1.0,  # Clip gradients to prevent explosion and NaN
+        max_grad_norm=1.0,  # Clip gradients to prevent explosion
         label_names=["labels"],  # Explicitly specify label field for PeftModel
     )
     

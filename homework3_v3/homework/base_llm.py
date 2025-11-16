@@ -22,13 +22,18 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 
 
 class BaseLLM:
-    def __init__(self, checkpoint=checkpoint):
+    def __init__(self, checkpoint=checkpoint, use_fp32_for_training=False):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         
         # Load model with optimizations
-        load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
-        if device == "cuda":
-            # Use memory-efficient attention if available
+        # Use FP32 for training to avoid numerical instability, FP16 for inference
+        if use_fp32_for_training:
+            load_kwargs = {"torch_dtype": torch.float32}
+        else:
+            load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+        
+        if device == "cuda" and not use_fp32_for_training:
+            # Use memory-efficient attention if available (skip for FP32 training)
             load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
         
         try:

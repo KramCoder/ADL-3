@@ -65,8 +65,12 @@ class BaseLLM:
         Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
         You don't need to change this function for now.
+        
+        For SFT training, we add a space after the question to match the training format:
+        question + " " + "<answer>{answer}</answer>"
         """
-        return question
+        # Add a space to match training format where model generates: " " + "<answer>...</answer>"
+        return f"{question.strip()} "
 
     def parse_answer(self, answer: str) -> float:
         """
@@ -74,7 +78,18 @@ class BaseLLM:
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            # First try to find <answer> tag
+            if "<answer>" in answer:
+                answer_text = answer.split("<answer>")[1].split("</answer>")[0]
+                return float(answer_text)
+            # If no <answer> tag, try to extract a number from the text
+            # This handles cases where model generates just the number
+            import re
+            # Look for numbers (including decimals and scientific notation)
+            numbers = re.findall(r'-?\d+\.?\d*(?:[eE][+-]?\d+)?', answer)
+            if numbers:
+                return float(numbers[0])
+            return float("nan")
         except (IndexError, ValueError):
             return float("nan")
 
@@ -105,7 +120,7 @@ class BaseLLM:
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=30,  # Optimized for non-batched test
+                max_new_tokens=50,  # Increased to ensure enough tokens for <answer>...</answer> format
                 min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -193,7 +208,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 40,  # Balanced for speed and quality
+            "max_new_tokens": 50,  # Increased to ensure enough tokens for <answer>...</answer> format
             "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,

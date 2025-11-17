@@ -67,14 +67,15 @@ def tokenize(tokenizer, question: str, answer: str):
     We concatenate question and answer, then create labels where only the answer
     tokens are supervised (question tokens are masked with -100).
     
-    Strategy: Tokenize the full text, then find where question ends by comparing
-    with separately tokenized question.
+    Strategy: Tokenize question and answer separately, then find where answer starts
+    by looking for the "<answer>" token sequence in the full tokenized text.
     """
     # Ensure pad token is set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Format the full text: question + answer + EOS
+    # Format the full text: question + space + answer + EOS
+    # Note: We add a space between question and answer to match natural formatting
     full_text = f"{question} {answer}{tokenizer.eos_token}"
     
     # Tokenize the full text (this is what the model will see)
@@ -90,44 +91,42 @@ def tokenize(tokenizer, question: str, answer: str):
     input_ids = encoded["input_ids"]
     attention_mask = encoded["attention_mask"]
     
-    # Now find where the question ends by tokenizing question separately
-    question_with_space = f"{question} "
-    question_encoded = tokenizer(
-        question_with_space,
-        add_special_tokens=True,
-        return_tensors=None,
-    )
-    question_token_ids = question_encoded["input_ids"]
+    # Find where the answer starts by looking for "<answer>" in the tokenized sequence
+    # The answer parameter already contains "<answer>...</answer>", so we search for that marker
+    answer_start_marker = "<answer>"
+    answer_start_encoded = tokenizer(answer_start_marker, add_special_tokens=False, return_tensors=None)
+    answer_start_token_ids = answer_start_encoded["input_ids"]
     
-    # Find the question length in the full sequence
-    question_len = 0
+    # Find the position where answer starts by searching for the answer start marker
+    answer_start_idx = len(input_ids)  # Default to end if not found
+    for i in range(len(input_ids) - len(answer_start_token_ids) + 1):
+        if input_ids[i:i+len(answer_start_token_ids)] == answer_start_token_ids:
+            answer_start_idx = i
+            break
     
-    # Try to match question tokens at the start of input_ids
-    if len(question_token_ids) <= len(input_ids):
-        # Check exact match from start
-        if input_ids[:len(question_token_ids)] == question_token_ids:
-            question_len = len(question_token_ids)
-        else:
-            # Question tokens might not match exactly due to tokenization differences
-            # Try to find a match with small offset (for special tokens)
-            for offset in range(min(2, len(input_ids))):
-                end_pos = offset + len(question_token_ids)
-                if end_pos <= len(input_ids):
-                    if input_ids[offset:end_pos] == question_token_ids:
-                        question_len = end_pos
-                        break
-            
-            # If still no match, use the question token length as estimate
-            # This is safe because question should be at the start
-            if question_len == 0:
-                question_len = len(question_token_ids)
+    # Fallback: if we can't find the marker, tokenize question separately and use its length
+    if answer_start_idx >= len(input_ids):
+        question_with_space = f"{question} "
+        question_encoded = tokenizer(
+            question_with_space,
+            add_special_tokens=True,
+            return_tensors=None,
+        )
+        question_token_ids = question_encoded["input_ids"]
+        # Try to match question tokens at the start
+        if len(question_token_ids) <= len(input_ids):
+            if input_ids[:len(question_token_ids)] == question_token_ids:
+                answer_start_idx = len(question_token_ids)
+            else:
+                # Use question length as estimate (accounting for potential special tokens)
+                answer_start_idx = min(len(question_token_ids), len(input_ids) - 20)
     
-    # Safety: ensure we have room for answer tokens
-    if question_len >= len(input_ids) - 1:
-        question_len = max(1, len(input_ids) - 10)
+    # Ensure we have room for answer tokens
+    if answer_start_idx >= len(input_ids) - 5:
+        answer_start_idx = max(1, len(input_ids) - 20)
     
     # Create labels: -100 for question (masked), actual token IDs for answer
-    labels = [-100] * question_len + input_ids[question_len:]
+    labels = [-100] * answer_start_idx + input_ids[answer_start_idx:]
     
     # Ensure labels length matches input_ids
     labels = labels[:len(input_ids)]
@@ -144,7 +143,7 @@ def tokenize(tokenizer, question: str, answer: str):
     if non_masked == 0:
         # This is a critical error - we need labels to train on
         # Fallback: train on the last portion (answer part)
-        answer_start = max(question_len, len(input_ids) - 15)
+        answer_start = max(answer_start_idx, len(input_ids) - 15)
         for i in range(answer_start, len(input_ids)):
             if attention_mask[i] == 1:
                 labels[i] = input_ids[i]

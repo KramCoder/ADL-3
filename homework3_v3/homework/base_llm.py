@@ -121,8 +121,11 @@ class BaseLLM:
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[0, input_length:]
         
-        # Decode and return
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Decode the generated tokens
+        decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        # Prepend <answer> tag to complete the format since it's part of the prompt
+        return f"<answer>{decoded}"
 
     @overload
     def batched_generate(
@@ -232,14 +235,17 @@ class BaseLLM:
         generated_tokens = outputs[:, input_length:]
 
         # Decode the generated tokens
+        generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Prepend <answer> tag to complete the format since it's part of the prompt
+        generations = [f"<answer>{gen}" for gen in generations]
+        
         if num_return_sequences is None:
             # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             return generations
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             
             # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []

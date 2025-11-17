@@ -28,6 +28,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     """
     from tqdm import tqdm
 
+    # Ensure parameters are the correct type (Fire may pass them as strings)
+    oversample = int(oversample)
+    temperature = float(temperature)
+
     dataset = Dataset("train")
     model = CoTModel()
     records: list[list[Any]] = []

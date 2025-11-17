@@ -71,13 +71,30 @@ class BaseLLM:
         """
         return f"{question.strip()} <answer>"
 
+    def _ensure_answer_tags(self, text: str) -> str:
+        """
+        Ensure generations always contain <answer>...</answer> so downstream parsing succeeds.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return "<answer></answer>"
+        # Drop any leading text before the first <answer> if present
+        if "<answer>" in cleaned:
+            cleaned = cleaned[cleaned.index("<answer>") :]
+        else:
+            cleaned = f"<answer>{cleaned}"
+        if "</answer>" not in cleaned:
+            cleaned = f"{cleaned}</answer>"
+        return cleaned
+
     def parse_answer(self, answer: str) -> float:
         """
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
+        normalized = self._ensure_answer_tags(answer)
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            return float(normalized.split("<answer>")[1].split("</answer>")[0])
         except (IndexError, ValueError):
             return float("nan")
 
@@ -120,8 +137,9 @@ class BaseLLM:
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[0, input_length:]
         
-        # Decode and return
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Decode and ensure <answer>...</answer> structure for downstream parsing
+        decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return self._ensure_answer_tags(decoded)
 
     @overload
     def batched_generate(
@@ -234,7 +252,7 @@ class BaseLLM:
         if num_return_sequences is None:
             # Single generation per prompt
             generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            return generations
+            return [self._ensure_answer_tags(g) for g in generations]
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
@@ -245,7 +263,9 @@ class BaseLLM:
             for i in range(batch_size):
                 start_idx = i * num_return_sequences
                 end_idx = start_idx + num_return_sequences
-                reshaped_generations.append(generations[start_idx:end_idx])
+                reshaped_generations.append(
+                    [self._ensure_answer_tags(g) for g in generations[start_idx:end_idx]]
+                )
             
             return reshaped_generations
 

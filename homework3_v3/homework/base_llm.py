@@ -235,7 +235,7 @@ class BaseLLM:
             
         # Handle multiple return sequences
         if num_return_sequences is not None:
-            generation_kwargs["num_return_sequences"] = num_return_sequences
+            generation_kwargs["num_return_sequences"] = int(num_return_sequences)
         
         # Generate responses with inference mode for maximum speed
         with torch.inference_mode():

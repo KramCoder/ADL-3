@@ -36,9 +36,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     # Process questions one at a time to ensure proper handling
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         # Generate multiple sequences (10-20) per question
+        # Pass raw question - batched_generate will format it
         generations = model.batched_generate(
-            [model.format_prompt(question)],
-            num_return_sequences=oversample,
+            [question],
+            num_return_sequences=int(oversample),  # Ensure it's an integer
             temperature=temperature
         )
         

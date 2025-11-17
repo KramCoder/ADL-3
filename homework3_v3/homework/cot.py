@@ -142,7 +142,7 @@ class CoTModel(BaseLLM):
         else:
             generation_kwargs["do_sample"] = False
             
-        # Handle multiple return sequences
+        # Handle multiple return sequences (shouldn't reach here if num_return_sequences > 1)
         if num_return_sequences is not None:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         

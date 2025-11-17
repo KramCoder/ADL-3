@@ -2,7 +2,15 @@ import argparse
 import zipfile
 from pathlib import Path
 
-BLACKLIST = ["__pycache__", ".pyc", ".ipynb", "grader", "bundle.py", "submission.zip", "README.md"]
+BLACKLIST = [
+    "__pycache__", ".pyc", ".ipynb", "grader", "bundle.py", "submission.zip",
+    "README.md", ".md",  # Exclude all markdown files
+    "checkpoint-",  # Exclude checkpoint directories
+    "events.out.tfevents",  # Exclude TensorBoard event files
+    "optimizer.pt", "scheduler.pt", "rng_state.pth",  # Exclude optimizer/scheduler states
+    "training_args.bin", "trainer_state.json",  # Exclude training state
+    "sft_output",  # Exclude intermediate training output directory
+]
 MAXSIZE_MB = 40
 
 

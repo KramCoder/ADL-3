@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,12 +8,17 @@ import torch
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from .base_llm import BaseLLM
-from .conversion_utils import apply_dataset_answer_patch, format_numeric_answer
+from .conversion_utils import format_numeric_answer
 from .data import Dataset, benchmark
+from .datagen import generate_dataset as generate_rft_dataset
 
 
 MODEL_NAME = "sft_model"
 DEFAULT_LORA_RANK = 16  # Increased from 4 to 16 for better capacity
+SFT_BASE_CHECKPOINT = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+RFT_DATA_PATH = Path(__file__).parent.parent / "data" / "rft.json"
+RFT_DEFAULT_OVERSAMPLE = 15
+RFT_DEFAULT_TEMPERATURE = 0.7
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -20,6 +26,40 @@ def _resolve_path(path: str | Path) -> Path:
     if candidate.is_absolute():
         return candidate
     return Path(__file__).parent / candidate
+
+
+def _resolve_data_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return Path(__file__).parent.parent / candidate
+
+
+def _ensure_rft_dataset(
+    path: str | Path = RFT_DATA_PATH,
+    *,
+    force_regenerate: bool = False,
+    oversample: int = RFT_DEFAULT_OVERSAMPLE,
+    temperature: float = RFT_DEFAULT_TEMPERATURE,
+) -> Path:
+    resolved_path = _resolve_data_path(path)
+    needs_regeneration = force_regenerate or not resolved_path.exists()
+
+    if needs_regeneration:
+        action = "Regenerating" if resolved_path.exists() else "Generating"
+        print(
+            f"{action} RFT dataset at {resolved_path} "
+            f"(oversample={oversample}, temperature={temperature})"
+        )
+        generate_rft_dataset(
+            output_json=resolved_path,
+            oversample=oversample,
+            temperature=temperature,
+        )
+    else:
+        print(f"Using existing RFT dataset at {resolved_path}")
+
+    return resolved_path
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
@@ -34,7 +74,7 @@ def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
 
     model_path.mkdir(parents=True, exist_ok=True)
 
-    llm = BaseLLM()
+    llm = BaseLLM(checkpoint=SFT_BASE_CHECKPOINT)
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
@@ -52,7 +92,7 @@ def load() -> BaseLLM:
     model_path = _resolve_path(MODEL_NAME)
     _ensure_adapter(model_path)
 
-    llm = BaseLLM()
+    llm = BaseLLM(checkpoint=SFT_BASE_CHECKPOINT)
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
     # DO NOT apply dataset answer patch - we want the actual trained model!
@@ -150,8 +190,70 @@ def format_example(prompt: str, answer: float) -> dict[str, str]:
     }
 
 
+class RFTDataset:
+    """Lightweight loader for the offline RFT reasoning dataset."""
+
+    def __init__(self, json_path: str | Path = RFT_DATA_PATH):
+        self.path = _resolve_data_path(json_path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"RFT dataset missing at {self.path}")
+
+        with self.path.open("r", encoding="utf-8") as handle:
+            raw_records = json.load(handle)
+
+        if not isinstance(raw_records, list):
+            raise ValueError(f"Expected a list of records in {self.path}")
+
+        self.records: list[tuple[str, float | None, str]] = []
+        for idx, entry in enumerate(raw_records):
+            if not isinstance(entry, (list, tuple)) or len(entry) < 3:
+                continue
+
+            question, answer_value, reasoning = entry[:3]
+            if not isinstance(question, str) or not isinstance(reasoning, str):
+                continue
+
+            try:
+                numeric_answer = float(answer_value)
+            except (TypeError, ValueError):
+                numeric_answer = None
+            else:
+                if numeric_answer != numeric_answer or abs(numeric_answer) == float("inf"):
+                    numeric_answer = None
+
+            self.records.append((question, numeric_answer, reasoning))
+
+        if not self.records:
+            raise ValueError(f"No valid RFT records found in {self.path}")
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, idx: int):
+        return self.records[idx]
+
+
+def format_rft_example(question: str, correct_answer: float | None, reasoning: str) -> dict[str, str]:
+    """Format question + reasoning pair for SFT fine-tuning."""
+
+    formatted_question = question.strip()
+    reasoning_text = reasoning.strip()
+
+    has_answer_tags = "<answer>" in reasoning_text and "</answer>" in reasoning_text
+    if not has_answer_tags:
+        fallback_value = 0.0 if correct_answer is None else correct_answer
+        formatted_answer = format_numeric_answer(fallback_value)
+        suffix = f"<answer>{formatted_answer}</answer>"
+        reasoning_text = f"{reasoning_text}\n{suffix}" if reasoning_text else suffix
+
+    return {
+        "question": formatted_question,
+        "answer": reasoning_text,
+    }
+
+
 class TokenizedDataset:
-    def __init__(self, tokenizer, data: Dataset, format_fn):
+    def __init__(self, tokenizer, data: Any, format_fn):
         """
         Dataset that tokenizes examples on the fly.
         """
@@ -170,6 +272,10 @@ class TokenizedDataset:
 def train_model(
     output_dir: str = MODEL_NAME,
     max_steps: int | None = None,
+    rft_data_path: str | Path = RFT_DATA_PATH,
+    force_regenerate_rft: bool = False,
+    rft_oversample: int = RFT_DEFAULT_OVERSAMPLE,
+    rft_temperature: float = RFT_DEFAULT_TEMPERATURE,
     **_: Any,
 ):
     from transformers import Trainer, TrainingArguments, default_data_collator, TrainerCallback
@@ -244,7 +350,7 @@ def train_model(
     
     # Load base model in FP32 for training to avoid NaN gradients
     # FP16 model + FP16 training causes numerical instability
-    llm = BaseLLM(use_fp32_for_training=True)
+    llm = BaseLLM(checkpoint=SFT_BASE_CHECKPOINT, use_fp32_for_training=True)
     
     # Ensure model is in eval mode initially (BaseLLM sets this)
     # We'll set to train mode after applying LoRA
@@ -275,8 +381,15 @@ def train_model(
     print(f"Trainable parameters: {trainable_params}")
     
     # Prepare dataset
-    train_dataset = Dataset("train")
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    rft_path = _ensure_rft_dataset(
+        path=rft_data_path,
+        force_regenerate=force_regenerate_rft,
+        oversample=rft_oversample,
+        temperature=rft_temperature,
+    )
+    reasoning_dataset = RFTDataset(rft_path)
+    print(f"Loaded {len(reasoning_dataset)} RFT reasoning pairs from {rft_path}")
+    tokenized_dataset = TokenizedDataset(llm.tokenizer, reasoning_dataset, format_rft_example)
     
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]
@@ -421,7 +534,7 @@ def test_model(ckpt_path: str = MODEL_NAME):
     model_path = _resolve_path(ckpt_path)
     _ensure_adapter(model_path)
 
-    llm = BaseLLM()
+    llm = BaseLLM(checkpoint=SFT_BASE_CHECKPOINT)
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
     # DO NOT apply dataset answer patch - we want to test the actual trained model

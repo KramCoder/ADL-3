@@ -7,6 +7,11 @@ from typing import Any
 from .cot import CoTModel
 from .data import Dataset, is_answer_valid
 
+DEFAULT_OUTPUT_PATH = Path("data/rft.json")
+RFT_MODEL_CHECKPOINT = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+MIN_GENERATIONS = 10
+MAX_GENERATIONS = 20
+
 
 def _resolve_output_path(path: str | Path) -> Path:
     candidate = Path(path)
@@ -15,22 +20,31 @@ def _resolve_output_path(path: str | Path) -> Path:
     return Path(__file__).parent.parent / candidate
 
 
-def generate_dataset(output_json: str, oversample: int = 15, temperature: float = 0.7) -> str:
+def generate_dataset(
+    output_json: str | Path = DEFAULT_OUTPUT_PATH,
+    oversample: int = 15,
+    temperature: float = 0.7,
+) -> str:
     """Create an offline reasoning dataset for RFT training.
 
-    Generate multiple completions from CoTModel, then select the one with
-    the correct answer. If none of the answers are correct, try again with higher temperature
-    or accept the closest answer to ensure we get 850-900+ QA pairs.
-    
+    For every question in the supervised dataset we sample `oversample` chain-of-thought
+    completions from a stronger CoT model (SmolLM2-1.7B). Only the completions that contain the
+    correct numeric answer inside the <answer></answer> tags are kept; the rest are discarded.
+
     Args:
-        output_json: Path to output JSON file
-        oversample: Number of generations per question (increased to 15 for better coverage)
-        temperature: Sampling temperature (increased to 0.7 for more diversity)
+        output_json: Path to output JSON file (defaults to data/rft.json)
+        oversample: Number of generations per question (must be between 10 and 20)
+        temperature: Sampling temperature (> 0 for diverse reasoning)
     """
     from tqdm import tqdm
 
+    if not (MIN_GENERATIONS <= oversample <= MAX_GENERATIONS):
+        raise ValueError(
+            f"oversample must be between {MIN_GENERATIONS} and {MAX_GENERATIONS} inclusive; got {oversample}"
+        )
+
     dataset = Dataset("train")
-    model = CoTModel()
+    model = CoTModel(checkpoint=RFT_MODEL_CHECKPOINT)
     records: list[list[Any]] = []
     rejected_count = 0
 
@@ -43,7 +57,7 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         questions_batch.append(question)
         prompts_batch.append(model.format_prompt(question))
-        indices_batch.append((idx, correct_answer))
+        indices_batch.append(correct_answer)
         
         # Process batch when it's full or at the end
         if len(prompts_batch) >= batch_size or idx == len(dataset.data) - 1:
@@ -51,60 +65,27 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             generations = model.batched_generate(
                 prompts_batch,
                 num_return_sequences=oversample,
-                temperature=temperature
+                temperature=temperature,
             )
             
             # Process each question's generations
-            for (orig_idx, correct_answer), question_text, generations_list in zip(indices_batch, questions_batch, generations):
-                # Find the first generation with a correct answer
+            for correct_answer, question_text, generations_list in zip(
+                indices_batch, questions_batch, generations
+            ):
                 found_correct = False
-                best_reasoning = None
-                best_error = float('inf')
                 
                 for reasoning in generations_list:
-                    # Verify reasoning contains answer tags
                     if "<answer>" not in reasoning or "</answer>" not in reasoning:
                         continue
                     
                     parsed_answer = model.parse_answer(reasoning)
-                    if parsed_answer != parsed_answer:  # Check for NaN
+                    if parsed_answer != parsed_answer:  # NaN check
                         continue
                     
                     if is_answer_valid(parsed_answer, correct_answer):
                         records.append([question_text, correct_answer, reasoning])
                         found_correct = True
                         break
-                    else:
-                        # Track the closest answer as fallback
-                        error = abs(parsed_answer - correct_answer) / abs(correct_answer) if correct_answer != 0 else abs(parsed_answer - correct_answer)
-                        if error < best_error:
-                            best_error = error
-                            best_reasoning = reasoning
-                
-                # If no correct answer found, try one more time with higher temperature
-                if not found_correct:
-                    # Retry with higher temperature for better diversity
-                    retry_generations = model.batched_generate(
-                        [model.format_prompt(question_text)],
-                        num_return_sequences=5,
-                        temperature=0.9
-                    )
-                    
-                    for reasoning in retry_generations[0]:
-                        if "<answer>" not in reasoning or "</answer>" not in reasoning:
-                            continue
-                        parsed_answer = model.parse_answer(reasoning)
-                        if parsed_answer != parsed_answer:  # Check for NaN
-                            continue
-                        if is_answer_valid(parsed_answer, correct_answer):
-                            records.append([question_text, correct_answer, reasoning])
-                            found_correct = True
-                            break
-                
-                # If still no correct answer, use the best one we found (within 10% error)
-                if not found_correct and best_reasoning is not None and best_error < 0.1:
-                    records.append([question_text, correct_answer, best_reasoning])
-                    found_correct = True
                 
                 if not found_correct:
                     rejected_count += 1

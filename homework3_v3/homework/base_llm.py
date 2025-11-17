@@ -1,4 +1,6 @@
+import math
 import os
+import re
 import warnings
 from typing import overload
 
@@ -19,6 +21,7 @@ from tqdm import tqdm
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+ANSWER_VALUE_PATTERN = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
 class BaseLLM:
@@ -90,6 +93,43 @@ class BaseLLM:
             # The grader cannot process NaN values
             return 0.0
 
+    def _finalize_answer(self, raw_generation: str) -> str:
+        """
+        Ensure that the generated string always matches the <answer>value</answer> format
+        and that `value` is a finite float to avoid NaN propagation downstream.
+        """
+        text = raw_generation.strip()
+
+        # Isolate the content between <answer> and </answer>
+        start = text.find("<answer>")
+        if start != -1:
+            text_after_start = text[start + len("<answer>") :]
+        else:
+            text_after_start = text
+
+        end = text_after_start.find("</answer>")
+        if end != -1:
+            candidate_region = text_after_start[:end]
+        else:
+            candidate_region = text_after_start
+
+        candidate_region = candidate_region.strip()
+
+        match = ANSWER_VALUE_PATTERN.search(candidate_region)
+        if match:
+            candidate_value = match.group(0)
+            try:
+                parsed_value = float(candidate_value)
+            except ValueError:
+                candidate_value = "0"
+            else:
+                if not math.isfinite(parsed_value):
+                    candidate_value = "0"
+        else:
+            candidate_value = "0"
+
+        return f"<answer>{candidate_value}</answer>"
+
     def generate(self, prompt: str) -> str:
         """
         (Optional) Implement this method first and then implement batched_generate below.
@@ -124,17 +164,18 @@ class BaseLLM:
                 pad_token_id=pad_token_id,
                 do_sample=False,
                 use_cache=True,  # Enable KV cache for faster generation
-            )
-        
+              )
+
         # Decode only the generated tokens (exclude input)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[0, input_length:]
-        
+
         # Decode the generated tokens
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        
+
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        return f"<answer>{decoded}"
+        raw_result = f"<answer>{decoded}"
+        return self._finalize_answer(raw_result)
 
     @overload
     def batched_generate(
@@ -235,7 +276,7 @@ class BaseLLM:
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 **generation_kwargs,
-            )
+              )
 
         # Decode only the generated tokens (exclude input tokens). All prompts have been
         # left padded to the same length, so slicing with the maximum input length works
@@ -245,9 +286,9 @@ class BaseLLM:
 
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-        
+
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in generations]
+        generations = [self._finalize_answer(f"<answer>{gen}") for gen in generations]
         
         if num_return_sequences is None:
             # Single generation per prompt

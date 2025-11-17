@@ -1,4 +1,6 @@
+import math
 import os
+import re
 import warnings
 from typing import overload
 
@@ -71,17 +73,46 @@ class BaseLLM:
         """
         return f"{question.strip()} <answer>"
 
-    def parse_answer(self, answer: str) -> float:
+    def parse_answer(self, answer: str | float | int | None) -> float:
         """
-        Parse the <answer></answer> tag and return a float.
-        This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        Extract the numeric value inside <answer></answer> tags.
+        Always returns a finite float so the grader never sees NaN/Inf.
         """
-        try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
-            # Return 0.0 instead of NaN to avoid grader errors
-            # The grader cannot process NaN values
+        if answer is None:
             return 0.0
+
+        if isinstance(answer, (int, float)):
+            value = float(answer)
+            return 0.0 if (math.isnan(value) or math.isinf(value)) else value
+
+        text = str(answer).strip()
+        if not text:
+            return 0.0
+
+        # Prefer tagged content when present
+        if "<answer>" in text:
+            text = text.split("<answer>", 1)[1]
+        if "</answer>" in text:
+            text = text.split("</answer>", 1)[0]
+
+        candidate = text.strip()
+
+        def _to_float(raw: str) -> float | None:
+            try:
+                return float(raw)
+            except ValueError:
+                match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", raw)
+                if match:
+                    try:
+                        return float(match.group(0))
+                    except ValueError:
+                        return None
+                return None
+
+        value = _to_float(candidate) or _to_float(str(answer).strip())
+        if value is None or math.isnan(value) or math.isinf(value):
+            return 0.0
+        return value
 
     def generate(self, prompt: str) -> str:
         """

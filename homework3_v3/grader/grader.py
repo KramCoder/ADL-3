@@ -1,6 +1,7 @@
 import builtins
 import inspect
 import logging
+import math
 import sys
 import time
 import traceback
@@ -89,7 +90,16 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
-        final_score = int(n_passed * score / total + 0.5)
+        # Handle division by zero and NaN cases
+        if total == 0:
+            final_score = 0
+        else:
+            score_value = n_passed * score / total + 0.5
+            # Check for NaN and handle gracefully
+            if math.isnan(score_value) or math.isinf(score_value):
+                final_score = 0
+            else:
+                final_score = int(score_value)
         msg = f"{final_score} / {score} {msg}"
 
         return final_score, msg, error

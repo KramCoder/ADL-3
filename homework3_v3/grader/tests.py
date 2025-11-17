@@ -45,6 +45,9 @@ class GenerateGrader(Grader):
         If the loss is greater than or equal to max_loss, you get 0.0 (no points)
         Otherwise, score is linearly interpolated between these extremes
         """
+        # Handle NaN and Inf values - return 0 score
+        if np.isnan(loss) or np.isinf(loss):
+            return 0.0
         # Normalize so that lower loss gives higher score
         score_normalized = 1.0 - (loss - min_loss) / (max_loss - min_loss)
         return np.clip(score_normalized, 0.0, 1.0)
@@ -64,8 +67,16 @@ class GenerateGrader(Grader):
             loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
 
             loss = loss * tokens["attention_mask"][..., 1:].contiguous().to(self.device)
-            loss = loss.sum() / tokens["attention_mask"][..., 1:].sum()
-            return loss.cpu().item()
+            mask_sum = tokens["attention_mask"][..., 1:].sum()
+            # Prevent division by zero - if no valid tokens, return a high loss value
+            if mask_sum == 0:
+                return float('inf')
+            loss = loss.sum() / mask_sum
+            loss_value = loss.cpu().item()
+            # Check for NaN and return a high loss value instead
+            if np.isnan(loss_value):
+                return float('inf')
+            return loss_value
 
     def check_generate_score(self):
         llm = self.load_model()

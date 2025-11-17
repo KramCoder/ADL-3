@@ -336,9 +336,6 @@ def train_model(
         "lr_scheduler_type": "cosine",  # Use cosine decay instead of linear
         "warmup_ratio": 0.1,  # 10% warmup steps
         "warmup_steps": 0,  # Will be computed from warmup_ratio
-        # Ensure learning rate doesn't decay to zero
-        # Cosine scheduler will decay from lr to lr * 0.1 by default, but we want to ensure minimum
-        # We'll handle this in the trainer if needed
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
         "ddp_find_unused_parameters": False,  # Faster training

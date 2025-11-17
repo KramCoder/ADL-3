@@ -104,11 +104,12 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
         
         # Generate with inference mode for maximum speed
+        # Generate enough tokens to complete <answer>value</answer>
         with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=30,  # Optimized for non-batched test
+                max_new_tokens=50,  # Increased to ensure we can generate full answer
                 min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -196,7 +197,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 40,  # Balanced for speed and quality
+            "max_new_tokens": 50,  # Increased to ensure we can generate full answer
             "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,

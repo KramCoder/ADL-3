@@ -178,8 +178,7 @@ class CoTModel(BaseLLM):
             gen_stripped = gen.strip()
             if not gen_stripped:
                 # If empty, provide a minimal valid output to prevent division by zero
-                # Use " 0" to ensure tokenization produces at least one token
-                gen_stripped = " 0"
+                gen_stripped = "<answer>0</answer>"
             validated_generations.append(gen_stripped)
         
         if num_return_sequences is None:

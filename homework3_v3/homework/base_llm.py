@@ -69,11 +69,13 @@ class BaseLLM:
         Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
         
-        For SFT training, we need to match the format seen during training:
-        Training format: "question <answer>value</answer>"
-        Inference format: "question <answer>" (model completes the rest)
+        For SFT/RFT training, the model learns:
+        Training format: "question reasoning <answer>value</answer>"
+        Inference format: "question" (model generates full reasoning + answer tags)
+        
+        This ensures training and inference formats match!
         """
-        return f"{question.strip()} <answer>"
+        return question.strip()
 
     def parse_answer(self, answer: str) -> float:
         """
@@ -143,10 +145,10 @@ class BaseLLM:
         decoded_stripped = decoded.strip()
         if not decoded_stripped:
             # If empty, provide a minimal valid output to prevent division by zero
-            decoded_stripped = " 0"
+            decoded_stripped = "<answer>0</answer>"
         
-        # Prepend <answer> tag to complete the format since it's part of the prompt
-        return f"<answer>{decoded_stripped}"
+        # Return the full generation (model should generate <answer>...</answer> tags itself)
+        return decoded_stripped
 
     @overload
     def batched_generate(
@@ -267,12 +269,11 @@ class BaseLLM:
             gen_stripped = gen.strip()
             if not gen_stripped:
                 # If empty, provide a minimal valid output to prevent division by zero
-                # Use " 0" to ensure tokenization produces at least one token
-                gen_stripped = " 0"
+                gen_stripped = "<answer>0</answer>"
             validated_generations.append(gen_stripped)
         
-        # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in validated_generations]
+        # Return full generations (model generates <answer>...</answer> tags itself)
+        generations = validated_generations
         
         if num_return_sequences is None:
             # Single generation per prompt

@@ -12,7 +12,7 @@ from .data import Dataset, benchmark
 
 
 MODEL_NAME = "sft_model"
-DEFAULT_LORA_RANK = 4
+DEFAULT_LORA_RANK = 16  # Increased from 4 to 16 for better capacity
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -40,8 +40,8 @@ def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
         target_modules="all-linear",
         bias="none",
         r=rank,
-        lora_alpha=max(rank * 4, 4),
-        lora_dropout=0.0,
+        lora_alpha=rank * 2,  # Match training config
+        lora_dropout=0.05,  # Match training config
     )
 
     lora_model = get_peft_model(llm.model, config)
@@ -67,85 +67,67 @@ def tokenize(tokenizer, question: str, answer: str):
     We concatenate question and answer, then create labels where only the answer
     tokens are supervised (question tokens are masked with -100).
     
-    Strategy: Tokenize the full text, then find where question ends by comparing
-    with separately tokenized question.
+    Simplified strategy: Tokenize question and answer separately, then concatenate.
     """
     # Ensure pad token is set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Format the full text: question + answer + EOS
-    full_text = f"{question} {answer}{tokenizer.eos_token}"
-    
-    # Tokenize the full text (this is what the model will see)
     max_length = 128
-    encoded = tokenizer(
-        full_text,
-        padding="max_length",
-        truncation=True,
-        max_length=max_length,
-        return_tensors=None,
-    )
     
-    input_ids = encoded["input_ids"]
-    attention_mask = encoded["attention_mask"]
-    
-    # Now find where the question ends by tokenizing question separately
-    question_with_space = f"{question} "
+    # Tokenize question (with space after) - we'll mask these tokens
+    question_text = f"{question} "
     question_encoded = tokenizer(
-        question_with_space,
+        question_text,
         add_special_tokens=True,
+        truncation=False,
         return_tensors=None,
     )
-    question_token_ids = question_encoded["input_ids"]
+    question_ids = question_encoded["input_ids"]
     
-    # Find the question length in the full sequence
-    question_len = 0
+    # Tokenize answer (with EOS) - these are the tokens we train on
+    answer_text = f"{answer}{tokenizer.eos_token}"
+    answer_encoded = tokenizer(
+        answer_text,
+        add_special_tokens=False,  # Don't add special tokens again
+        truncation=False,
+        return_tensors=None,
+    )
+    answer_ids = answer_encoded["input_ids"]
     
-    # Try to match question tokens at the start of input_ids
-    if len(question_token_ids) <= len(input_ids):
-        # Check exact match from start
-        if input_ids[:len(question_token_ids)] == question_token_ids:
-            question_len = len(question_token_ids)
-        else:
-            # Question tokens might not match exactly due to tokenization differences
-            # Try to find a match with small offset (for special tokens)
-            for offset in range(min(2, len(input_ids))):
-                end_pos = offset + len(question_token_ids)
-                if end_pos <= len(input_ids):
-                    if input_ids[offset:end_pos] == question_token_ids:
-                        question_len = end_pos
-                        break
-            
-            # If still no match, use the question token length as estimate
-            # This is safe because question should be at the start
-            if question_len == 0:
-                question_len = len(question_token_ids)
+    # Concatenate question + answer
+    input_ids = question_ids + answer_ids
     
-    # Safety: ensure we have room for answer tokens
-    if question_len >= len(input_ids) - 1:
-        question_len = max(1, len(input_ids) - 10)
+    # Truncate if necessary
+    if len(input_ids) > max_length:
+        # Keep as much of the question as possible, but ensure answer fits
+        min_answer_tokens = min(len(answer_ids), 20)  # Reserve at least 20 tokens for answer
+        question_max = max_length - min_answer_tokens
+        question_ids = question_ids[:question_max]
+        answer_ids = answer_ids[:(max_length - len(question_ids))]
+        input_ids = question_ids + answer_ids
     
-    # Create labels: -100 for question (masked), actual token IDs for answer
-    labels = [-100] * question_len + input_ids[question_len:]
+    question_len = len(question_ids)
     
-    # Ensure labels length matches input_ids
-    labels = labels[:len(input_ids)]
-    if len(labels) < len(input_ids):
-        labels.extend([-100] * (len(input_ids) - len(labels)))
+    # Create attention mask (all 1s for non-padding)
+    attention_mask = [1] * len(input_ids)
     
-    # Mask out padding tokens
-    for i in range(len(labels)):
-        if attention_mask[i] == 0:
-            labels[i] = -100
+    # Create labels: -100 for question tokens, actual IDs for answer tokens
+    labels = [-100] * question_len + answer_ids
     
-    # Critical check: verify we have non-masked labels
+    # Pad to max_length
+    padding_length = max_length - len(input_ids)
+    if padding_length > 0:
+        input_ids = input_ids + [tokenizer.pad_token_id] * padding_length
+        attention_mask = attention_mask + [0] * padding_length
+        labels = labels + [-100] * padding_length
+    
+    # Verify we have non-masked labels
     non_masked = sum(1 for l in labels if l != -100)
     if non_masked == 0:
-        # This is a critical error - we need labels to train on
-        # Fallback: train on the last portion (answer part)
-        answer_start = max(question_len, len(input_ids) - 15)
-        for i in range(answer_start, len(input_ids)):
+        # This should not happen with the new logic, but keep as safety check
+        # Train on last 10 tokens
+        for i in range(max(0, len(input_ids) - 10), len(input_ids)):
             if attention_mask[i] == 1:
                 labels[i] = input_ids[i]
     
@@ -274,8 +256,8 @@ def train_model(
         target_modules="all-linear",
         bias="none",
         r=DEFAULT_LORA_RANK,
-        lora_alpha=DEFAULT_LORA_RANK * 4,
-        lora_dropout=0.0,
+        lora_alpha=DEFAULT_LORA_RANK * 2,  # Reduced from 4x to 2x for better training
+        lora_dropout=0.05,  # Add small dropout for regularization
     )
     
     # Apply LoRA to model
@@ -319,12 +301,14 @@ def train_model(
     training_args_dict = {
         "output_dir": str(model_path),
         "logging_dir": str(model_path),
-        "report_to": "tensorboard",
+        "report_to": "none",  # Disable TensorBoard to save space
         "gradient_checkpointing": True,
-        "learning_rate": 2e-4,
-        "per_device_train_batch_size": 32,
+        "learning_rate": 5e-4,  # Increased from 2e-4 for faster convergence
+        "per_device_train_batch_size": 16,  # Reduced from 32 for better gradients
+        "gradient_accumulation_steps": 2,  # Accumulate to effective batch size of 32
         "logging_steps": 10,
-        "save_total_limit": 1,
+        "save_total_limit": 0,  # Don't save checkpoints to save space
+        "save_strategy": "no",  # Don't save intermediate checkpoints
         "remove_unused_columns": False,  # Keep our custom labels
         "bf16": use_bf16,  # Use bf16 if available (more stable)
         "fp16": use_fp16,  # Fallback to fp16 if bf16 not available
@@ -334,20 +318,19 @@ def train_model(
         "label_names": ["labels"],  # Explicitly specify label field for PeftModel
         # Learning rate scheduler settings
         "lr_scheduler_type": "cosine",  # Use cosine decay instead of linear
-        "warmup_ratio": 0.1,  # 10% warmup steps
+        "warmup_ratio": 0.05,  # Reduced warmup for faster convergence
         "warmup_steps": 0,  # Will be computed from warmup_ratio
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
         "ddp_find_unused_parameters": False,  # Faster training
+        "weight_decay": 0.01,  # Add weight decay for regularization
     }
     
     # Set epochs or max_steps (not both)
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
-        training_args_dict["save_strategy"] = "no"
     else:
-        training_args_dict["num_train_epochs"] = 3
-        training_args_dict["save_strategy"] = "epoch"
+        training_args_dict["num_train_epochs"] = 5  # Increased from 3 to 5 epochs
     
     training_args = TrainingArguments(**training_args_dict)
     

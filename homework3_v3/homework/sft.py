@@ -297,7 +297,7 @@ def train_model(
             use_fp16 = True
             print("Using float16 for training (with loss scaling)")
     
-    # Training arguments with improved stability
+    # Training arguments with improved stability and better accuracy
     training_args_dict = {
         "output_dir": str(model_path),
         "logging_dir": str(model_path),
@@ -318,7 +318,7 @@ def train_model(
         "label_names": ["labels"],  # Explicitly specify label field for PeftModel
         # Learning rate scheduler settings
         "lr_scheduler_type": "cosine",  # Use cosine decay instead of linear
-        "warmup_ratio": 0.05,  # Reduced warmup for faster convergence
+        "warmup_ratio": 0.1,  # Increased warmup for better stability
         "warmup_steps": 0,  # Will be computed from warmup_ratio
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
@@ -330,7 +330,7 @@ def train_model(
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
     else:
-        training_args_dict["num_train_epochs"] = 5  # Increased from 3 to 5 epochs
+        training_args_dict["num_train_epochs"] = 6  # Increased from 5 to 6 epochs for better accuracy
     
     training_args = TrainingArguments(**training_args_dict)
     

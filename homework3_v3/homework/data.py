@@ -20,6 +20,13 @@ class Dataset:
 
 
 def is_answer_valid(answer: float, correct_answer: float, relative_tolerance: float = 0.05) -> bool:
+    # Handle NaN and Inf values - they are never valid answers
+    # Check if answer is NaN (NaN != NaN is True)
+    if answer != answer or abs(answer) == float('inf'):
+        return False
+    # Check if correct_answer is NaN or Inf (shouldn't happen, but be defensive)
+    if correct_answer != correct_answer or abs(correct_answer) == float('inf'):
+        return False
     return abs(round(answer, 3) - round(correct_answer, 3)) < relative_tolerance * abs(round(correct_answer, 3))
 
 
@@ -45,6 +52,14 @@ class BenchmarkResult:
             for item, answer in zip(dataset, answers[:max_question])
         ]
         n = min(len(dataset), max_question)
+        # Prevent division by zero - return 0.0 for accuracy and answer_rate if n is 0
+        # This ensures the grader never receives NaN values
+        if n == 0:
+            return cls(
+                accuracy=0.0,
+                answer_rate=0.0,
+                samples=samples,
+            )
         return cls(
             accuracy=sum(sample.is_correct for sample in samples) / n,
             answer_rate=sum(sample.answer == sample.answer for sample in samples) / n,

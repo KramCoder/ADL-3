@@ -57,7 +57,7 @@ class CoTModel(BaseLLM):
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 80,  # Increased for CoT reasoning
+            "max_new_tokens": 120,  # Increased further for better CoT reasoning
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -120,9 +120,11 @@ class CoTModel(BaseLLM):
                 "role": "system",
                 "content": (
                     "You are an expert at unit conversions. "
-                    "For each question, identify the conversion factor, perform the calculation step by step, "
-                    "and provide your final answer inside <answer></answer> tags. "
-                    "Be precise and accurate with your calculations."
+                    "For each question, you must:\n"
+                    "1. Identify the conversion factor between the units\n"
+                    "2. Show your calculation step by step\n"
+                    "3. Provide your final answer inside <answer></answer> tags\n"
+                    "Be precise and accurate with your calculations. Always include the reasoning before the answer."
                 ),
             },
             {
@@ -131,7 +133,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "1 kg = 1000 g, so 6 * 1000 = 6000. <answer>6000</answer>",
+                "content": "To convert kg to grams, I need to know that 1 kg = 1000 g. So for 6 kg: 6 * 1000 = 6000. <answer>6000</answer>",
             },
             {
                 "role": "user",
@@ -139,7 +141,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "1 mi = 1609.344 m, 1 h = 3600 s. So 1 mi/h = 1609.344/3600 m/s = 0.44704 m/s. For 3 mi/h: 3 * 0.44704 = 1.34112. <answer>1.34112</answer>",
+                "content": "To convert mi/h to m/s, I need two conversion factors: 1 mi = 1609.344 m and 1 h = 3600 s. So 1 mi/h = 1609.344/3600 m/s = 0.44704 m/s. For 3 mi/h: 3 * 0.44704 = 1.34112 m/s. <answer>1.34112</answer>",
             },
             {
                 "role": "user",
@@ -147,7 +149,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "1 quart = 2 pint, so 5 * 2 = 10. <answer>10</answer>",
+                "content": "I know that 1 quart = 2 pint. So to convert 5 quart: 5 * 2 = 10 pint. <answer>10</answer>",
             },
             {
                 "role": "user",
@@ -155,7 +157,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "1 G = 1000 MB, so 2 * 1000 = 2000. <answer>2000</answer>",
+                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = 2000 MB. <answer>2000</answer>",
             },
             {
                 "role": "user",

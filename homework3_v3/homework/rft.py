@@ -59,10 +59,23 @@ def load() -> BaseLLM:
 def format_rft_example(question: str, answer: float, reasoning: str) -> dict[str, str]:
     """
     Format RFT data point. The reasoning already contains the answer in <answer> tags.
+    
+    We ensure the reasoning text includes:
+    1. Full reasoning/explanation
+    2. Both <answer> and </answer> tags
+    3. The correct numerical value inside the tags
     """
+    # Verify reasoning has answer tags
+    reasoning = reasoning.strip()
+    if "<answer>" not in reasoning or "</answer>" not in reasoning:
+        # If missing tags, add them (shouldn't happen with proper datagen)
+        from .conversion_utils import format_numeric_answer
+        formatted_answer = format_numeric_answer(answer)
+        reasoning = f"{reasoning} <answer>{formatted_answer}</answer>"
+    
     return {
         "question": question.strip(),
-        "answer": reasoning.strip(),
+        "answer": reasoning,  # Full reasoning text with answer tags
     }
 
 
@@ -104,6 +117,28 @@ def train_model(
     
     with rft_data_path.open() as f:
         rft_data = json.load(f)
+    
+    # Validate dataset quality
+    print(f"Loaded {len(rft_data)} RFT training examples")
+    if len(rft_data) < 850:
+        print(f"WARNING: Only {len(rft_data)} examples. Target is 850-900+ for better generalization.")
+    
+    # Verify all examples have proper format with answer tags
+    invalid_count = 0
+    for i, example in enumerate(rft_data):
+        if len(example) < 3:
+            print(f"WARNING: Example {i} has invalid format: {example}")
+            invalid_count += 1
+            continue
+        question, answer, reasoning = example[0], example[1], example[2]
+        if "<answer>" not in reasoning or "</answer>" not in reasoning:
+            print(f"WARNING: Example {i} missing answer tags in reasoning")
+            invalid_count += 1
+    
+    if invalid_count > 0:
+        print(f"WARNING: {invalid_count} examples have format issues. Consider regenerating dataset.")
+    else:
+        print("All examples have proper format with answer tags.")
     
     # Create a dataset-like object for TokenizedDataset
     class RFTDataset:

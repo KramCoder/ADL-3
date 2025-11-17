@@ -143,6 +143,29 @@ class BaseLLM:
             # If empty, provide a minimal valid output to prevent division by zero
             decoded_stripped = " 0"
         
+        # Handle the case where model might generate the full <answer>...</answer> format
+        # or just the value and closing tag. The prompt already includes "<answer>", so:
+        # - If model generates "<answer>value</answer>", we need to extract just "value</answer>"
+        # - If model generates "value</answer>", that's correct
+        # - If model generates just "value", we need to add "</answer>"
+        if decoded_stripped.startswith("<answer>"):
+            # Model generated full format, extract the content
+            if "</answer>" in decoded_stripped:
+                # Extract content between tags
+                try:
+                    content = decoded_stripped.split("<answer>", 1)[1].split("</answer>", 1)[0]
+                    decoded_stripped = f"{content}</answer>"
+                except IndexError:
+                    # Malformed, just use as-is
+                    pass
+            else:
+                # Has opening tag but no closing, remove the opening tag
+                decoded_stripped = decoded_stripped.replace("<answer>", "", 1)
+        
+        # Ensure we have proper closing tag
+        if not decoded_stripped.endswith("</answer>"):
+            decoded_stripped = f"{decoded_stripped}</answer>"
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
         return f"<answer>{decoded_stripped}"
 
@@ -267,6 +290,30 @@ class BaseLLM:
                 # If empty, provide a minimal valid output to prevent division by zero
                 # Use " 0" to ensure tokenization produces at least one token
                 gen_stripped = " 0"
+            
+            # Handle the case where model might generate the full <answer>...</answer> format
+            # or just the value and closing tag. The prompt already includes "<answer>", so:
+            # - If model generates "<answer>value</answer>", we need to extract just "value</answer>"
+            # - If model generates "value</answer>", that's correct
+            # - If model generates just "value", we need to add "</answer>"
+            if gen_stripped.startswith("<answer>"):
+                # Model generated full format, extract the content
+                if "</answer>" in gen_stripped:
+                    # Extract content between tags
+                    try:
+                        content = gen_stripped.split("<answer>", 1)[1].split("</answer>", 1)[0]
+                        gen_stripped = f"{content}</answer>"
+                    except IndexError:
+                        # Malformed, just use as-is
+                        pass
+                else:
+                    # Has opening tag but no closing, remove the opening tag
+                    gen_stripped = gen_stripped.replace("<answer>", "", 1)
+            
+            # Ensure we have proper closing tag
+            if not gen_stripped.endswith("</answer>"):
+                gen_stripped = f"{gen_stripped}</answer>"
+            
             validated_generations.append(gen_stripped)
         
         # Prepend <answer> tag to complete the format since it's part of the prompt

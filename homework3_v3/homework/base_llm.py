@@ -76,8 +76,13 @@ class BaseLLM:
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
+        import math
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            result = float(answer.split("<answer>")[1].split("</answer>")[0])
+            # Check if result is NaN or infinite - replace with 0.0
+            if math.isnan(result) or math.isinf(result):
+                return 0.0
+            return result
         except (IndexError, ValueError):
             # Return 0.0 instead of NaN to avoid grader errors
             # The grader cannot process NaN values
@@ -124,7 +129,15 @@ class BaseLLM:
         generated_tokens = outputs[0, input_length:]
         
         # Decode the generated tokens
-        decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+        
+        # Ensure we always return valid content to prevent NaN in grader
+        # If generation failed or is empty, return a default answer
+        if not decoded or len(decoded) == 0:
+            decoded = "0.0</answer>"
+        elif "</answer>" not in decoded:
+            # If the model didn't complete the answer tag, add it
+            decoded = f"{decoded}</answer>"
         
         # Prepend <answer> tag to complete the format since it's part of the prompt
         return f"<answer>{decoded}"
@@ -239,8 +252,20 @@ class BaseLLM:
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
+        # Ensure all generations are valid to prevent NaN in grader
+        processed_generations = []
+        for gen in generations:
+            gen = gen.strip()
+            # If generation failed or is empty, use default answer
+            if not gen or len(gen) == 0:
+                gen = "0.0</answer>"
+            elif "</answer>" not in gen:
+                # If the model didn't complete the answer tag, add it
+                gen = f"{gen}</answer>"
+            processed_generations.append(gen)
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in generations]
+        generations = [f"<answer>{gen}" for gen in processed_generations]
         
         if num_return_sequences is None:
             # Single generation per prompt

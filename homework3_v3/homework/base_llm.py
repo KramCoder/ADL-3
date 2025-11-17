@@ -18,13 +18,16 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-checkpoint = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+# Default to 360M model for all parts except data generation
+# Data generation should use 1.7B model (specified explicitly in datagen.py)
+DEFAULT_CHECKPOINT = "HuggingFaceTB/SmolLM2-360M-Instruct"
+CHECKPOINT_1_7B = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 class BaseLLM:
-    def __init__(self, checkpoint=checkpoint, use_fp32_for_training=False):
+    def __init__(self, checkpoint=DEFAULT_CHECKPOINT, use_fp32_for_training=False):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         
         # Load model with optimizations

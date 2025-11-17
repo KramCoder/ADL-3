@@ -8,6 +8,7 @@ import torch
 
 from .cot import CoTModel
 from .data import Dataset, is_answer_valid
+from .base_llm import CHECKPOINT_1_7B
 
 
 def _resolve_output_path(path: str | Path) -> Path:
@@ -35,7 +36,9 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     temperature = float(temperature)
 
     dataset = Dataset("train")
-    model = CoTModel()
+    # Use 1.7B model for data generation as specified in README
+    # "Using the HuggingFaceTB/SmolLM2-1.7B-Instruct model should further help you obtain better rollouts."
+    model = CoTModel(checkpoint=CHECKPOINT_1_7B)
     records: list[list[Any]] = []
     rejected_count = 0
 

@@ -31,6 +31,13 @@ class CoTModel(BaseLLM):
         from tqdm import tqdm
         import torch
         
+        # Convert num_return_sequences to int if it's provided (Fire may pass it as string)
+        if num_return_sequences is not None:
+            num_return_sequences = int(num_return_sequences)
+        
+        # Convert temperature to float (Fire may pass it as string)
+        temperature = float(temperature)
+        
         # Preventing OOM
         micro_batch_size = 32
         if len(prompts) > micro_batch_size:

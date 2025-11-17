@@ -352,6 +352,11 @@ def train_model(
         "dataloader_pin_memory": False,  # Can help with memory issues
         "max_grad_norm": 1.0,  # Clip gradients to prevent explosion
         "label_names": ["labels"],  # Explicitly specify label field for PeftModel
+        # Learning rate scheduler settings - use constant after warmup to prevent LR from decaying to 0
+        # This ensures the model continues learning throughout training
+        "lr_scheduler_type": "constant",
+        "warmup_ratio": 0.1,  # 10% of training steps for warmup
+        "warmup_steps": 0,  # Will be computed from warmup_ratio
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
         "ddp_find_unused_parameters": False,  # Faster training
@@ -361,6 +366,10 @@ def train_model(
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
         training_args_dict["save_strategy"] = "no"
+        # Set warmup steps based on max_steps
+        if training_args_dict["warmup_ratio"] > 0:
+            training_args_dict["warmup_steps"] = int(max_steps * training_args_dict["warmup_ratio"])
+            training_args_dict.pop("warmup_ratio", None)  # Use warmup_steps instead
     else:
         training_args_dict["num_train_epochs"] = 3
         training_args_dict["save_strategy"] = "epoch"
@@ -440,9 +449,23 @@ def train_model(
                 else:
                     print(f"{key}: {value}")
     
-    # Save the final model
+    # Save the final model - ensure we save the best checkpoint
     print(f"\nSaving model to {model_path}")
+    # Save the model state
     trainer.save_model(str(model_path))
+    # Also save the state dict to ensure everything is saved
+    trainer.save_state()
+    
+    # Verify the model was saved correctly
+    adapter_config = model_path / "adapter_config.json"
+    adapter_file = model_path / "adapter_model.safetensors"
+    if not adapter_file.exists():
+        adapter_file = model_path / "adapter_model.bin"
+    
+    if adapter_config.exists() and adapter_file.exists():
+        print(f"Model saved successfully: {adapter_file}")
+    else:
+        print(f"WARNING: Model files not found! Config: {adapter_config.exists()}, Weights: {adapter_file.exists()}")
     
     # Test the model
     print("Testing model...")
@@ -459,6 +482,16 @@ def test_model(ckpt_path: str = MODEL_NAME):
     llm.model.eval()
     # DO NOT apply dataset answer patch - we want to test the actual trained model
     # apply_dataset_answer_patch(llm)
+
+    # Debug: Check what the model generates for the first question
+    if len(testset) > 0:
+        first_question = testset[0][0]
+        formatted_prompt = llm.format_prompt(first_question)
+        generated = llm.generate(first_question)
+        print(f"Debug - First question: {first_question}")
+        print(f"Debug - Formatted prompt: {formatted_prompt}")
+        print(f"Debug - Generated output: {generated}")
+        print(f"Debug - Parsed answer: {llm.parse_answer(generated)}")
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

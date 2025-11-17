@@ -29,6 +29,7 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
         temperature: Sampling temperature (> 0 for diversity)
     """
     from tqdm import tqdm
+    import gc
 
     # Convert to proper types (Fire may pass these as strings from command line)
     oversample = int(oversample)
@@ -42,8 +43,9 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     # Process questions one at a time to ensure proper handling
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         # Generate multiple sequences (10-20) per question
+        # The model will automatically chunk this into smaller batches to prevent OOM
         generations = model.batched_generate(
-            [model.format_prompt(question)],
+            [question],  # Pass raw question, model will format it
             num_return_sequences=oversample,
             temperature=temperature
         )
@@ -74,9 +76,19 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
         if not found_correct:
             rejected_count += 1
         
-        # Clear CUDA cache after each question to prevent OOM
+        # Aggressively clear memory after each question to prevent OOM
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            gc.collect()
+        
+        # Periodically save progress to avoid losing work if OOM occurs later
+        if (idx + 1) % 100 == 0 and len(records) > 0:
+            output_path = _resolve_output_path(output_json)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", encoding="utf-8") as handle:
+                import json
+                json.dump(records, handle, indent=2)
+            print(f"\nProgress saved: {len(records)} records generated so far")
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

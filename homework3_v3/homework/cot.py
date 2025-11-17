@@ -38,7 +38,84 @@ class CoTModel(BaseLLM):
         # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
-        # Preventing OOM
+        # Preventing OOM: When generating multiple sequences per prompt, generate them sequentially
+        # to avoid memory explosion. This trades speed for memory efficiency.
+        if num_return_sequences is not None and num_return_sequences > 1:
+            # Generate sequences sequentially for each prompt to save memory
+            all_results = []
+            for prompt in tqdm(prompts, desc="Generating sequences"):
+                # Generate sequences one prompt at a time
+                prompt_results = []
+                # Generate in smaller batches to further reduce memory usage
+                sequences_per_batch = min(3, num_return_sequences)  # Generate 3 at a time max
+                
+                for batch_start in range(0, num_return_sequences, sequences_per_batch):
+                    batch_end = min(batch_start + sequences_per_batch, num_return_sequences)
+                    batch_num_sequences = batch_end - batch_start
+                    
+                    # Use format_prompt to handle prompt formatting
+                    formatted_prompt = self.format_prompt(prompt)
+                    
+                    # Set padding side to left for proper alignment during generation
+                    self.tokenizer.padding_side = "left"
+                    
+                    # Tokenize the prompt
+                    inputs = self.tokenizer([formatted_prompt], padding=True, return_tensors="pt").to(self.device)
+                    
+                    # Set up generation parameters
+                    pad_token_id = self.tokenizer.pad_token_id
+                    if pad_token_id is None:
+                        pad_token_id = self.tokenizer.eos_token_id
+                    
+                    generation_kwargs = {
+                        "max_new_tokens": 120,  # Increased further for better CoT reasoning
+                        "min_new_tokens": 1,
+                        "eos_token_id": self.tokenizer.eos_token_id,
+                        "pad_token_id": pad_token_id,
+                        "use_cache": True,
+                        "num_return_sequences": batch_num_sequences,
+                    }
+                    
+                    # Handle sampling vs greedy decoding
+                    if temperature > 0:
+                        generation_kwargs.update({
+                            "do_sample": True,
+                            "temperature": temperature,
+                        })
+                    else:
+                        generation_kwargs["do_sample"] = False
+                    
+                    # Generate responses with inference mode for maximum speed
+                    with torch.inference_mode():
+                        outputs = self.model.generate(
+                            input_ids=inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            **generation_kwargs,
+                        )
+                    
+                    # Decode only the generated tokens
+                    input_length = inputs["input_ids"].shape[1]
+                    generated_tokens = outputs[:, input_length:]
+                    
+                    # Decode the generated tokens
+                    batch_generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+                    
+                    # Validate and add to results
+                    for gen in batch_generations:
+                        gen_stripped = gen.strip()
+                        if not gen_stripped:
+                            gen_stripped = " 0"
+                        prompt_results.append(gen_stripped)
+                    
+                    # Clear CUDA cache between batches to free up memory
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                all_results.append(prompt_results)
+            
+            return all_results
+        
+        # Preventing OOM for single-sequence generation
         micro_batch_size = 32
         if len(prompts) > micro_batch_size:
             return [
@@ -80,7 +157,7 @@ class CoTModel(BaseLLM):
         else:
             generation_kwargs["do_sample"] = False
             
-        # Handle multiple return sequences
+        # Handle multiple return sequences (shouldn't reach here if num_return_sequences > 1)
         if num_return_sequences is not None:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         

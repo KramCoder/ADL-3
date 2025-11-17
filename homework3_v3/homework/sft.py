@@ -285,17 +285,33 @@ def train_model(
     trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
     
-    # Prepare dataset - load RFT data
+    # Prepare dataset - load RFT data (auto-generate if missing)
     import json
     from pathlib import Path
     data_dir = Path(__file__).parent.parent / "data"
     rft_data_path = data_dir / "rft.json"
     
+    # Auto-generate RFT dataset if it doesn't exist
     if not rft_data_path.exists():
-        raise FileNotFoundError(
-            f"RFT data file not found at {rft_data_path}. "
-            "Please run datagen.py first to generate the RFT dataset."
+        print("=" * 60)
+        print("RFT dataset not found. Generating it now...")
+        print("This will use CoTModel to generate reasoning chains.")
+        print("=" * 60)
+        
+        from .datagen import generate_dataset
+        
+        # Generate the dataset with default parameters (oversample=15, temperature=0.7)
+        # This creates 10-20 diverse completions per question and selects correct ones
+        generated_path = generate_dataset(
+            output_json="data/rft.json",
+            oversample=15,
+            temperature=0.7
         )
+        
+        print("=" * 60)
+        print(f"RFT dataset generated successfully at {generated_path}")
+        print("Proceeding with SFT training on the generated dataset...")
+        print("=" * 60)
     
     with rft_data_path.open() as f:
         rft_data = json.load(f)

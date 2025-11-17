@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from .cot import CoTModel
 from .data import Dataset, is_answer_valid
 
@@ -71,6 +73,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
         # If no correct answer found, ignore this data point (as per instructions)
         if not found_correct:
             rejected_count += 1
+        
+        # Clear CUDA cache after each question to prevent OOM
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

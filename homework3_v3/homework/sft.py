@@ -150,6 +150,17 @@ def format_example(prompt: str, answer: float) -> dict[str, str]:
     }
 
 
+def format_example_rft(question: str, correct_answer: float, reasoning: str) -> dict[str, str]:
+    """
+    Construct a question / reasoning pair for RFT training.
+    Format: question + reasoning (where reasoning already contains <answer> tags)
+    """
+    return {
+        "question": question.strip(),
+        "answer": reasoning.strip(),  # Reasoning already contains the answer in <answer> tags
+    }
+
+
 class TokenizedDataset:
     def __init__(self, tokenizer, data: Dataset, format_fn):
         """
@@ -274,9 +285,35 @@ def train_model(
     trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
     
-    # Prepare dataset
-    train_dataset = Dataset("train")
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    # Prepare dataset - load RFT data
+    import json
+    from pathlib import Path
+    data_dir = Path(__file__).parent.parent / "data"
+    rft_data_path = data_dir / "rft.json"
+    
+    if not rft_data_path.exists():
+        raise FileNotFoundError(
+            f"RFT data file not found at {rft_data_path}. "
+            "Please run datagen.py first to generate the RFT dataset."
+        )
+    
+    with rft_data_path.open() as f:
+        rft_data = json.load(f)
+    
+    # RFT data format: [question, correct_answer, reasoning]
+    # We'll create a simple list-like object for compatibility
+    class RFTDataset:
+        def __init__(self, data):
+            self.data = data
+        
+        def __len__(self):
+            return len(self.data)
+        
+        def __getitem__(self, idx):
+            return self.data[idx]
+    
+    train_dataset = RFTDataset(rft_data)
+    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example_rft)
     
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]

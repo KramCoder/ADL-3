@@ -133,8 +133,16 @@ class BaseLLM:
         # Decode the generated tokens
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
+        # Ensure the generation is non-empty to prevent NaN in loss calculation
+        # The grader computes loss on question + answer, so we need at least some content
+        # that will produce tokens when tokenized. Empty outputs cause division by zero.
+        decoded_stripped = decoded.strip()
+        if not decoded_stripped:
+            # If empty, provide a minimal valid output to prevent division by zero
+            decoded_stripped = " 0"
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        return f"<answer>{decoded}"
+        return f"<answer>{decoded_stripped}"
 
     @overload
     def batched_generate(
@@ -246,8 +254,21 @@ class BaseLLM:
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
+        # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
+        # The grader computes loss on question + answer, so we need at least some content
+        # that will produce tokens when tokenized. Empty outputs cause division by zero.
+        validated_generations = []
+        for gen in generations:
+            # Strip whitespace and check if empty
+            gen_stripped = gen.strip()
+            if not gen_stripped:
+                # If empty, provide a minimal valid output to prevent division by zero
+                # Use " 0" to ensure tokenization produces at least one token
+                gen_stripped = " 0"
+            validated_generations.append(gen_stripped)
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in generations]
+        generations = [f"<answer>{gen}" for gen in validated_generations]
         
         if num_return_sequences is None:
             # Single generation per prompt

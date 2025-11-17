@@ -73,7 +73,8 @@ def tokenize(tokenizer, question: str, answer: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    max_length = 128
+    # Increased max_length for RFT data which includes reasoning (chain-of-thought)
+    max_length = 256
     
     # Tokenize question (with space after) - we'll mask these tokens
     question_text = f"{question} "
@@ -147,6 +148,18 @@ def format_example(prompt: str, answer: float) -> dict[str, str]:
     return {
         "question": prompt.strip(),
         "answer": f"<answer>{formatted_answer}</answer>",
+    }
+
+
+def format_rft_example(question: str, correct_answer: float, reasoning: str) -> dict[str, str]:
+    """
+    Construct a question / reasoning pair for RFT training.
+    Format: question + reasoning (which includes chain-of-thought and <answer>...</answer>)
+    The reasoning already contains the full chain-of-thought and answer tags.
+    """
+    return {
+        "question": question.strip(),
+        "answer": reasoning.strip(),  # reasoning already includes the answer tags
     }
 
 
@@ -274,9 +287,36 @@ def train_model(
     trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
     
-    # Prepare dataset
-    train_dataset = Dataset("train")
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    # Prepare RFT dataset - load from data/rft.json
+    import json
+    from pathlib import Path
+    
+    rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
+    if not rft_data_path.exists():
+        raise FileNotFoundError(
+            f"RFT dataset not found at {rft_data_path}. "
+            "Please run datagen.py first to generate the RFT dataset."
+        )
+    
+    with rft_data_path.open("r", encoding="utf-8") as f:
+        rft_data = json.load(f)
+    
+    print(f"Loaded {len(rft_data)} RFT training examples from {rft_data_path}")
+    
+    # Create a simple list-based dataset for RFT data
+    class RFTDataset:
+        def __init__(self, data):
+            self.data = data
+        
+        def __len__(self):
+            return len(self.data)
+        
+        def __getitem__(self, idx):
+            # RFT data format: [question, correct_answer, reasoning]
+            return self.data[idx]
+    
+    rft_dataset = RFTDataset(rft_data)
+    tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
     
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import shutil
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -13,6 +14,7 @@ from .data import Dataset, benchmark
 
 MODEL_NAME = "sft_model"
 DEFAULT_LORA_RANK = 4
+DEFAULT_EPOCHS = 4
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -61,6 +63,18 @@ def load() -> BaseLLM:
     return llm
 
 
+def _find_subsequence(sequence: list[int], subsequence: list[int]) -> int:
+    """Return the start index of *subsequence* inside *sequence* or -1 if missing."""
+    if not subsequence or not sequence:
+        return -1
+    sub_len = len(subsequence)
+    max_start = len(sequence) - sub_len + 1
+    for idx in range(max_start):
+        if sequence[idx : idx + sub_len] == subsequence:
+            return idx
+    return -1
+
+
 def tokenize(tokenizer, question: str, answer: str):
     """
     Tokenize a data element.
@@ -92,38 +106,29 @@ def tokenize(tokenizer, question: str, answer: str):
     
     # Now find where the question ends by tokenizing question separately
     question_with_space = f"{question} "
-    question_encoded = tokenizer(
-        question_with_space,
-        add_special_tokens=True,
-        return_tensors=None,
-    )
-    question_token_ids = question_encoded["input_ids"]
-    
-    # Find the question length in the full sequence
-    question_len = 0
-    
-    # Try to match question tokens at the start of input_ids
-    if len(question_token_ids) <= len(input_ids):
-        # Check exact match from start
-        if input_ids[:len(question_token_ids)] == question_token_ids:
-            question_len = len(question_token_ids)
-        else:
-            # Question tokens might not match exactly due to tokenization differences
-            # Try to find a match with small offset (for special tokens)
-            for offset in range(min(2, len(input_ids))):
-                end_pos = offset + len(question_token_ids)
-                if end_pos <= len(input_ids):
-                    if input_ids[offset:end_pos] == question_token_ids:
-                        question_len = end_pos
-                        break
-            
-            # If still no match, use the question token length as estimate
-            # This is safe because question should be at the start
-            if question_len == 0:
-                question_len = len(question_token_ids)
+
+    # Prefer locating the start of "<answer" to align supervision precisely
+    answer_prefix = getattr(tokenizer, "_answer_prefix_ids", None)
+    if answer_prefix is None:
+        tokenizer._answer_prefix_ids = tokenizer("<answer>", add_special_tokens=False)["input_ids"]
+        answer_prefix = tokenizer._answer_prefix_ids
+
+    answer_start = _find_subsequence(input_ids, answer_prefix)
+    if answer_start != -1:
+        question_len = answer_start
+    else:
+        question_encoded = tokenizer(
+            question_with_space,
+            add_special_tokens=True,
+            return_tensors=None,
+        )
+        question_token_ids = question_encoded["input_ids"]
+
+        # Fall back to original length estimate
+        question_len = min(len(question_token_ids), len(input_ids))
     
     # Safety: ensure we have room for answer tokens
-    if question_len >= len(input_ids) - 1:
+    if question_len <= 0 or question_len >= len(input_ids) - 1:
         question_len = max(1, len(input_ids) - 10)
     
     # Create labels: -100 for question (masked), actual token IDs for answer
@@ -295,6 +300,10 @@ def train_model(
     # Prepare dataset
     train_dataset = Dataset("train")
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+
+    eval_dataset = None
+    if max_steps is None:
+        eval_dataset = TokenizedDataset(llm.tokenizer, Dataset("valid"), format_example)
     
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]
@@ -323,6 +332,7 @@ def train_model(
         "gradient_checkpointing": True,
         "learning_rate": 2e-4,
         "per_device_train_batch_size": 32,
+        "per_device_eval_batch_size": 32,
         "logging_steps": 10,
         "save_total_limit": 1,
         "remove_unused_columns": False,  # Keep our custom labels
@@ -339,15 +349,23 @@ def train_model(
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
         "ddp_find_unused_parameters": False,  # Faster training
+        "weight_decay": 0.01,
+        "save_safetensors": True,
     }
     
     # Set epochs or max_steps (not both)
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
         training_args_dict["save_strategy"] = "no"
+        training_args_dict["evaluation_strategy"] = "no"
+        training_args_dict["load_best_model_at_end"] = False
     else:
-        training_args_dict["num_train_epochs"] = 3
+        training_args_dict["num_train_epochs"] = DEFAULT_EPOCHS
         training_args_dict["save_strategy"] = "epoch"
+        training_args_dict["evaluation_strategy"] = "epoch"
+        training_args_dict["load_best_model_at_end"] = True
+        training_args_dict["metric_for_best_model"] = "eval_loss"
+        training_args_dict["greater_is_better"] = False
     
     training_args = TrainingArguments(**training_args_dict)
     
@@ -400,6 +418,7 @@ def train_model(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
         callbacks=[GradientNormCallback()],
     )
@@ -427,6 +446,7 @@ def train_model(
     # Save the final model
     print(f"\nSaving model to {model_path}")
     trainer.save_model(str(model_path))
+    _cleanup_model_dir(model_path)
     
     # Test the model
     print("Testing model...")
@@ -446,6 +466,56 @@ def test_model(ckpt_path: str = MODEL_NAME):
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
+
+
+def _cleanup_model_dir(model_path: Path) -> None:
+    """Remove bulky training artifacts so the submission stays compact."""
+    if not model_path.exists():
+        return
+
+    heavy_files = {
+        "optimizer.pt",
+        "scheduler.pt",
+        "trainer_state.json",
+        "training_args.bin",
+        "pytorch_model.bin",
+        "rng_state.pth",
+    }
+    keep_files = {
+        "adapter_model.safetensors",
+        "adapter_model.bin",
+        "adapter_config.json",
+        "README.md",
+    }
+
+    # Drop intermediate checkpoints and tensorboard runs
+    for checkpoint_dir in model_path.glob("checkpoint-*"):
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    for run_dir in model_path.glob("runs*"):
+        if run_dir.is_dir():
+            shutil.rmtree(run_dir, ignore_errors=True)
+    for event_file in model_path.glob("events.out.tfevents.*"):
+        try:
+            event_file.unlink()
+        except OSError:
+            pass
+
+    for filename in heavy_files:
+        target = model_path / filename
+        if target.exists():
+            try:
+                target.unlink()
+            except OSError:
+                pass
+
+    # Remove stray large binaries except the adapter weights
+    for item in model_path.iterdir():
+        if item.is_file() and item.name not in keep_files:
+            if item.suffix in {".pt", ".bin"}:
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":

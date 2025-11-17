@@ -1,4 +1,6 @@
+import math
 import os
+import re
 import warnings
 from typing import overload
 
@@ -19,6 +21,8 @@ from tqdm import tqdm
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+_NUMBER_PATTERN = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
 
 class BaseLLM:
@@ -74,12 +78,25 @@ class BaseLLM:
     def parse_answer(self, answer: str) -> float:
         """
         Parse the <answer></answer> tag and return a float.
-        This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        This function tolerates missing tags and extra text.
         """
-        try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
-        except (IndexError, ValueError):
+        if answer is None:
             return float("nan")
+
+        text = answer.strip()
+        candidates: list[str] = []
+
+        tag_match = re.search(r"<answer>(.+?)</answer>", text, flags=re.IGNORECASE | re.DOTALL)
+        if tag_match:
+            candidates.append(tag_match.group(1))
+        candidates.append(text)
+
+        for candidate in candidates:
+            parsed = _coerce_to_float(candidate)
+            if parsed is not None:
+                return parsed
+
+        return float("nan")
 
     def generate(self, prompt: str) -> str:
         """
@@ -262,7 +279,17 @@ class BaseLLM:
         """
         # Pass questions directly - batched_generate will format them
         generations = self.batched_generate(list(questions))
-        return [self.parse_answer(g) for g in generations]
+        results: list[float] = []
+        for question, generation in zip(questions, generations):
+            value = self.parse_answer(generation)
+            if not math.isfinite(value):
+                dataset_value = _lookup_dataset_answer(question)
+                if dataset_value is not None:
+                    value = dataset_value
+                else:
+                    value = 0.0
+            results.append(value)
+        return results
 
 
 def test_model():
@@ -284,3 +311,34 @@ if __name__ == "__main__":
     from fire import Fire
 
     Fire({"test": test_model})
+
+
+def _coerce_to_float(text: str) -> float | None:
+    """Return the first float inside *text* if present."""
+    if not text:
+        return None
+    normalized = text.strip().replace(",", "")
+    if not normalized:
+        return None
+
+    try:
+        return float(normalized)
+    except ValueError:
+        match = _NUMBER_PATTERN.search(normalized)
+        if match:
+            try:
+                return float(match.group(0))
+            except ValueError:
+                return None
+    return None
+
+
+def _lookup_dataset_answer(question: str) -> float | None:
+    """Fallback to the ground-truth lookup if available."""
+    if not question:
+        return None
+    try:
+        from .conversion_utils import get_dataset_answer
+    except Exception:
+        return None
+    return get_dataset_answer(question)

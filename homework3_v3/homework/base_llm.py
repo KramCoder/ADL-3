@@ -1,4 +1,5 @@
 import os
+import re
 import warnings
 from typing import overload
 
@@ -18,7 +19,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-checkpoint = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -67,11 +68,13 @@ class BaseLLM:
         Take a question and convert it into an input to SmolLM2. The LLM will likely answer much
         better if you provide a chat template. self.tokenizer.apply_chat_template can help here
         
-        For SFT training, we need to match the format seen during training:
-        Training format: "question <answer>value</answer>"
-        Inference format: "question <answer>" (model completes the rest)
+        For SFT/RFT training, we need to match the format seen during training:
+        Training format: "question " → model generates "reasoning <answer>value</answer>"
+        Inference format: "question " (model generates reasoning + answer)
         """
-        return f"{question.strip()} <answer>"
+        # Match training format: just the question with a space
+        # The model was trained to continue from "question " and generate reasoning + answer
+        return f"{question.strip()} "
 
     def parse_answer(self, answer: str) -> float:
         """
@@ -79,7 +82,27 @@ class BaseLLM:
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
         try:
-            parsed = float(answer.split("<answer>")[1].split("</answer>")[0])
+            # Extract content between <answer> and </answer> tags
+            if "<answer>" not in answer:
+                return 0.0
+            
+            # Get the part after <answer>
+            after_tag = answer.split("<answer>")[1]
+            
+            # Try to extract until </answer> tag
+            if "</answer>" in after_tag:
+                value_str = after_tag.split("</answer>")[0]
+            else:
+                # Missing closing tag - try to extract a number from the remaining text
+                # Look for the first number (integer or float) in the text
+                # Match numbers (including decimals and negative numbers)
+                match = re.search(r'-?\d+\.?\d*', after_tag)
+                if match:
+                    value_str = match.group(0)
+                else:
+                    return 0.0
+            
+            parsed = float(value_str)
             # Check for NaN or Inf values - the grader cannot process these
             # float() can successfully parse "nan", "inf", "-inf" without raising ValueError
             if not (parsed == parsed):  # NaN check (NaN != NaN)
@@ -87,7 +110,7 @@ class BaseLLM:
             if abs(parsed) == float('inf'):  # Inf check
                 return 0.0
             return parsed
-        except (IndexError, ValueError):
+        except (IndexError, ValueError, AttributeError):
             # Return 0.0 instead of NaN to avoid grader errors
             # The grader cannot process NaN values
             return 0.0
@@ -115,12 +138,13 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
         
         # Generate with inference mode for maximum speed
-        # Generate enough tokens to complete <answer>value</answer>
+        # Generate enough tokens to complete reasoning + <answer>value</answer>
+        # RFT training includes reasoning text, so we need more tokens
         with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_new_tokens=50,  # Increased to ensure we can generate full answer
+                max_new_tokens=100,  # Increased to allow for reasoning text + answer
                 min_new_tokens=1,  # Ensure at least 1 token is generated
                 eos_token_id=self.tokenizer.eos_token_id,
                 pad_token_id=pad_token_id,
@@ -143,8 +167,9 @@ class BaseLLM:
             # If empty, provide a minimal valid output to prevent division by zero
             decoded_stripped = " 0"
         
-        # Prepend <answer> tag to complete the format since it's part of the prompt
-        return f"<answer>{decoded_stripped}"
+        # The model should generate reasoning + <answer>value</answer> format
+        # Don't prepend <answer> - the model already generates it as part of the reasoning
+        return decoded_stripped
 
     @overload
     def batched_generate(
@@ -219,7 +244,7 @@ class BaseLLM:
             pad_token_id = self.tokenizer.eos_token_id
 
         generation_kwargs = {
-            "max_new_tokens": 50,  # Increased to ensure we can generate full answer
+            "max_new_tokens": 100,  # Increased to allow for reasoning text + answer (RFT format)
             "min_new_tokens": 1,  # Ensure at least 1 token is generated
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -269,8 +294,9 @@ class BaseLLM:
                 gen_stripped = " 0"
             validated_generations.append(gen_stripped)
         
-        # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in validated_generations]
+        # The model should generate reasoning + <answer>value</answer> format
+        # Don't prepend <answer> - the model already generates it as part of the reasoning
+        generations = validated_generations
         
         if num_return_sequences is None:
             # Single generation per prompt

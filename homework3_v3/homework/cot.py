@@ -90,21 +90,34 @@ class CoTModel(BaseLLM):
         generated_tokens = outputs[:, input_length:]
 
         # Decode the generated tokens
+        generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
+        # The grader computes loss on question + answer, so we need at least some content
+        # that will produce tokens when tokenized. Empty outputs cause division by zero.
+        validated_generations = []
+        for gen in generations:
+            # Strip whitespace and check if empty
+            gen_stripped = gen.strip()
+            if not gen_stripped:
+                # If empty, provide a minimal valid output to prevent division by zero
+                # Use " 0" to ensure tokenization produces at least one token
+                gen_stripped = " 0"
+            validated_generations.append(gen_stripped)
+        
         if num_return_sequences is None:
             # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            return generations
+            return validated_generations
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             
             # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []
             for i in range(batch_size):
                 start_idx = i * num_return_sequences
                 end_idx = start_idx + num_return_sequences
-                reshaped_generations.append(generations[start_idx:end_idx])
+                reshaped_generations.append(validated_generations[start_idx:end_idx])
             
             return reshaped_generations
 

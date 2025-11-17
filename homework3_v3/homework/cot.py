@@ -38,7 +38,24 @@ class CoTModel(BaseLLM):
         # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
-        # Preventing OOM
+        # When generating multiple sequences per prompt, reduce batch size to prevent OOM
+        # High num_return_sequences multiplies memory usage significantly
+        if num_return_sequences is not None and num_return_sequences > 5:
+            # For high num_return_sequences, process prompts one at a time or in very small batches
+            # This prevents memory explosion when num_return_sequences * batch_size is large
+            max_batch_size = max(1, 8 // num_return_sequences)  # Adaptive batch size
+            if len(prompts) > max_batch_size:
+                results = []
+                for idx in range(0, len(prompts), max_batch_size):
+                    batch_prompts = prompts[idx : idx + max_batch_size]
+                    batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
+                    results.extend(batch_results)
+                    # Clear cache after each batch to prevent OOM
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                return results
+        
+        # Preventing OOM for regular batching
         micro_batch_size = 32
         if len(prompts) > micro_batch_size:
             return [
@@ -98,6 +115,10 @@ class CoTModel(BaseLLM):
 
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Clear CUDA cache after generation to free memory, especially important for high num_return_sequences
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content

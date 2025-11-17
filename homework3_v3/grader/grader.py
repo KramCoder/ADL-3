@@ -89,19 +89,7 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
-        # Handle edge cases: if total is 0 or calculation results in NaN
-        if total == 0:
-            final_score = 0
-        else:
-            calculated_score = n_passed * score / total + 0.5
-            # Check if result is NaN or infinite before converting to int
-            if calculated_score != calculated_score:  # NaN check (NaN != NaN)
-                final_score = 0
-            elif abs(calculated_score) == float('inf'):  # Inf check
-                final_score = 0
-            else:
-                final_score = int(calculated_score)
-        
+        final_score = int(n_passed * score / total + 0.5)
         msg = f"{final_score} / {score} {msg}"
 
         return final_score, msg, error

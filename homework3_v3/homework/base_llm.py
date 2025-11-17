@@ -134,7 +134,8 @@ class BaseLLM:
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        return f"<answer>{decoded}"
+        # Ensure we always have some content - if generation is empty, add a default value
+        return f"<answer>{decoded if decoded.strip() else '0'}"
 
     @overload
     def batched_generate(
@@ -247,7 +248,8 @@ class BaseLLM:
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
         # Prepend <answer> tag to complete the format since it's part of the prompt
-        generations = [f"<answer>{gen}" for gen in generations]
+        # Ensure we always have some content - if generation is empty, add a default value
+        generations = [f"<answer>{gen if gen.strip() else '0'}" for gen in generations]
         
         if num_return_sequences is None:
             # Single generation per prompt

@@ -35,7 +35,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     temperature = float(temperature)
 
     dataset = Dataset("train")
-    model = CoTModel()
+    # Use 1.7B model specifically for data generation as per README instructions
+    # The README states: "Using the HuggingFaceTB/SmolLM2-1.7B-Instruct model should 
+    # further help you obtain better rollouts."
+    model = CoTModel(checkpoint="HuggingFaceTB/SmolLM2-1.7B-Instruct")
     records: list[list[Any]] = []
     rejected_count = 0
 

@@ -19,6 +19,9 @@ from .conversion_utils import apply_dataset_answer_patch
 
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
+        # Use the 1.7B model for better RFT data generation
+        if 'checkpoint' not in kwargs:
+            kwargs['checkpoint'] = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
         super().__init__(*args, **kwargs)
         # Removed apply_dataset_answer_patch to actually test the LLM
 

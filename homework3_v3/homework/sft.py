@@ -138,16 +138,32 @@ def tokenize(tokenizer, question: str, answer: str):
     }
 
 
-def format_example(prompt: str, answer: float) -> dict[str, str]:
+def format_example(prompt: str, answer: float, reasoning: str = None) -> dict[str, str]:
     """
-    Construct a question / answer pair.
-    Format: question + <answer>{answer}</answer>
+    Construct a question / answer pair for RFT training.
+    If reasoning is provided (RFT data), use it. Otherwise, use simple answer format.
+    
+    RFT Format: question + reasoning (which includes answer)
+    Simple Format: question + <answer>{answer}</answer>
     """
-    formatted_answer = format_numeric_answer(answer)
-    return {
-        "question": prompt.strip(),
-        "answer": f"<answer>{formatted_answer}</answer>",
-    }
+    if reasoning is not None:
+        # RFT format: reasoning already contains the answer tags
+        reasoning = reasoning.strip()
+        if "<answer>" not in reasoning or "</answer>" not in reasoning:
+            # If missing tags, add them (shouldn't happen with proper datagen)
+            formatted_answer = format_numeric_answer(answer)
+            reasoning = f"{reasoning} <answer>{formatted_answer}</answer>"
+        return {
+            "question": prompt.strip(),
+            "answer": reasoning,  # Full reasoning text with answer tags
+        }
+    else:
+        # Simple answer format (original SFT)
+        formatted_answer = format_numeric_answer(answer)
+        return {
+            "question": prompt.strip(),
+            "answer": f"<answer>{formatted_answer}</answer>",
+        }
 
 
 class TokenizedDataset:
@@ -274,9 +290,56 @@ def train_model(
     trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
     
-    # Prepare dataset
-    train_dataset = Dataset("train")
-    tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    # Prepare dataset - try to load RFT data first, fallback to regular train data
+    import json
+    rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
+    
+    if rft_data_path.exists():
+        # Load RFT dataset (format: [question, answer, reasoning])
+        with rft_data_path.open() as f:
+            rft_data = json.load(f)
+        
+        print(f"Loading RFT dataset with {len(rft_data)} examples")
+        
+        # Validate dataset quality
+        if len(rft_data) < 850:
+            print(f"WARNING: Only {len(rft_data)} examples. Target is 850-900+ for better generalization.")
+        
+        # Verify all examples have proper format with answer tags
+        invalid_count = 0
+        for i, example in enumerate(rft_data[:10]):  # Check first 10 examples
+            if len(example) < 3:
+                print(f"WARNING: Example {i} has invalid format: {example}")
+                invalid_count += 1
+                continue
+            question, answer, reasoning = example[0], example[1], example[2]
+            if "<answer>" not in reasoning or "</answer>" not in reasoning:
+                print(f"WARNING: Example {i} missing answer tags in reasoning")
+                invalid_count += 1
+        
+        if invalid_count > 0:
+            print(f"WARNING: {invalid_count} examples have format issues in first 10. Consider regenerating dataset.")
+        else:
+            print("RFT data format validated successfully.")
+        
+        # Create a dataset-like object for RFT data
+        class RFTDataset:
+            def __init__(self, data):
+                self.data = data
+            
+            def __len__(self):
+                return len(self.data)
+            
+            def __getitem__(self, idx):
+                return self.data[idx]
+        
+        train_dataset = RFTDataset(rft_data)
+        tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
+    else:
+        print("RFT data not found. Using regular train dataset.")
+        print(f"To generate RFT data, run: python -m homework.datagen data/rft.json")
+        train_dataset = Dataset("train")
+        tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example)
     
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]

@@ -52,7 +52,9 @@ def load() -> BaseLLM:
     model_path = _resolve_path(MODEL_NAME)
     _ensure_adapter(model_path)
 
-    llm = BaseLLM()
+    # Load base model with FP32 to match training configuration
+    # This prevents dtype mismatch between base model and LoRA weights
+    llm = BaseLLM(use_fp32_for_training=True)
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
     # DO NOT apply dataset answer patch - we want the actual trained model!
@@ -454,7 +456,9 @@ def test_model(ckpt_path: str = MODEL_NAME):
     model_path = _resolve_path(ckpt_path)
     _ensure_adapter(model_path)
 
-    llm = BaseLLM()
+    # Load base model with FP32 to match training configuration
+    # This prevents dtype mismatch between base model and LoRA weights
+    llm = BaseLLM(use_fp32_for_training=True)
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
     # DO NOT apply dataset answer patch - we want to test the actual trained model

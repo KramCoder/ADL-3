@@ -45,6 +45,10 @@ class GenerateGrader(Grader):
         If the loss is greater than or equal to max_loss, you get 0.0 (no points)
         Otherwise, score is linearly interpolated between these extremes
         """
+        # Handle NaN/Inf loss values
+        if np.isnan(loss) or np.isinf(loss):
+            return 0.0
+        
         # Normalize so that lower loss gives higher score
         score_normalized = 1.0 - (loss - min_loss) / (max_loss - min_loss)
         return np.clip(score_normalized, 0.0, 1.0)
@@ -115,6 +119,10 @@ class CoTGrader(Grader):
         If the score is less than or equal to min_score, you get 0.0 (no points)
         Otherwise, score is linearly interpolated between these extremes
         """
+        # Handle NaN/Inf score values
+        if np.isnan(score) or np.isinf(score):
+            return 0.0
+        
         score_normalized = (score - min_score) / (max_score - min_score)
         return np.clip(score_normalized, 0.0, 1.0)
 

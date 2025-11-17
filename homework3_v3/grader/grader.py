@@ -89,6 +89,11 @@ def case(func, kwargs=None, score=1, extra_credit=False, timeout=1000):
 
             total += 1
 
+        # Handle NaN values to prevent crashes
+        import math
+        if math.isnan(n_passed) or math.isinf(n_passed):
+            n_passed = 0.0
+        
         final_score = int(n_passed * score / total + 0.5)
         msg = f"{final_score} / {score} {msg}"
 

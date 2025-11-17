@@ -2,8 +2,25 @@ import argparse
 import zipfile
 from pathlib import Path
 
-BLACKLIST = ["__pycache__", ".pyc", ".ipynb", "grader", "bundle.py", "submission.zip", "README.md"]
-MAXSIZE_MB = 40
+BLACKLIST = [
+    "__pycache__", 
+    ".pyc", 
+    ".ipynb", 
+    "grader", 
+    "bundle.py", 
+    "submission.zip", 
+    "README.md",
+    # Training artifacts that should not be included
+    "checkpoint-",  # Checkpoint directories
+    ".tfevents.",  # Tensorboard event files
+    "optimizer.pt",  # Optimizer states
+    "scheduler.pt",  # Scheduler states
+    "rng_state.pth",  # RNG states
+    "training_args.bin",  # Training arguments
+    "trainer_state.json",  # Trainer state
+    "events.out.tfevents",  # Tensorboard events (alternative pattern)
+]
+MAXSIZE_MB = 50
 
 
 def bundle(homework_dir: str, utid: str):
@@ -17,7 +34,11 @@ def bundle(homework_dir: str, utid: str):
     files = []
 
     for f in homework_dir.rglob("*"):
-        if all(b not in str(f) for b in BLACKLIST):
+        # Skip if any blacklist pattern matches the file/directory name or path
+        if any(b in str(f) for b in BLACKLIST):
+            continue
+        # Only include files, not directories
+        if f.is_file():
             files.append(f)
 
     print("\n".join(str(f.relative_to(homework_dir)) for f in files))

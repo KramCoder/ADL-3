@@ -75,9 +75,11 @@ class BaseLLM:
         """
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        Returns NaN for invalid answers (used by answer_rate calculation).
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            parsed = answer.split("<answer>")[1].split("</answer>")[0]
+            return float(parsed)
         except (IndexError, ValueError):
             return float("nan")
 

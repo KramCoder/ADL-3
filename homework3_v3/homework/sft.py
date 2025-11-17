@@ -12,7 +12,7 @@ from .data import Dataset, benchmark
 
 
 MODEL_NAME = "sft_model"
-DEFAULT_LORA_RANK = 4
+DEFAULT_LORA_RANK = 8  # Increased from 4 to 8 for better model capacity
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -315,13 +315,13 @@ def train_model(
             use_fp16 = True
             print("Using float16 for training (with loss scaling)")
     
-    # Training arguments with improved stability
+    # Training arguments with improved stability and better accuracy
     training_args_dict = {
         "output_dir": str(model_path),
         "logging_dir": str(model_path),
         "report_to": "tensorboard",
         "gradient_checkpointing": True,
-        "learning_rate": 2e-4,
+        "learning_rate": 3e-4,  # Slightly higher LR for better learning
         "per_device_train_batch_size": 32,
         "logging_steps": 10,
         "save_total_limit": 1,
@@ -346,7 +346,7 @@ def train_model(
         training_args_dict["max_steps"] = max_steps
         training_args_dict["save_strategy"] = "no"
     else:
-        training_args_dict["num_train_epochs"] = 3
+        training_args_dict["num_train_epochs"] = 5  # Increased from 3 to 5 for better accuracy
         training_args_dict["save_strategy"] = "epoch"
     
     training_args = TrainingArguments(**training_args_dict)

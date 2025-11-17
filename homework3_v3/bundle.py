@@ -2,8 +2,27 @@ import argparse
 import zipfile
 from pathlib import Path
 
-BLACKLIST = ["__pycache__", ".pyc", ".ipynb", "grader", "bundle.py", "submission.zip", "README.md"]
-MAXSIZE_MB = 40
+BLACKLIST = [
+    "__pycache__", 
+    ".pyc", 
+    ".ipynb", 
+    "grader", 
+    "bundle.py", 
+    "submission.zip", 
+    "README.md",
+    # Exclude tensorboard logs and training artifacts
+    ".tfevents",
+    "events.out.tfevents",
+    "checkpoint-",  # Exclude checkpoint directories
+    "rng_state.pth",  # Exclude random state files
+    "optimizer.pt",  # Exclude optimizer state
+    "scheduler.pt",  # Exclude scheduler state
+    "trainer_state.json",  # Exclude trainer state
+    "training_args.bin",  # Exclude training args
+    # Exclude duplicate model outputs
+    "sft_output",
+]
+MAXSIZE_MB = 50  # Updated to match requirement
 
 
 def bundle(homework_dir: str, utid: str):

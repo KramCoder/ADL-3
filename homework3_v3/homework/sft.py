@@ -297,7 +297,15 @@ def train_model(
     if not rft_data_path.exists():
         print(f"RFT data file not found at {rft_data_path}.")
         print("Automatically generating RFT dataset...")
-        generate_dataset(str(rft_data_path), oversample=15, temperature=0.7)
+        # Use relative path to ensure consistent resolution with datagen's _resolve_output_path
+        # This ensures the path is resolved the same way whether called from sft.py or directly
+        relative_path = "data/rft.json"
+        generated_path = generate_dataset(relative_path, oversample=15, temperature=0.7)
+        # Verify the generated path matches what we expect
+        resolved_generated = Path(generated_path).resolve()
+        resolved_expected = rft_data_path.resolve()
+        if resolved_generated != resolved_expected:
+            print(f"Warning: Generated path {resolved_generated} differs from expected {resolved_expected}")
         print(f"RFT dataset generated successfully at {rft_data_path}")
     
     with rft_data_path.open() as f:

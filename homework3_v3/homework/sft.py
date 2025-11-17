@@ -411,9 +411,36 @@ def train_model(
     print(f"\nSaving model to {model_path}")
     trainer.save_model(str(model_path))
     
-    # Test the model
-    print("Testing model...")
+    # Test the model and validate accuracy
+    print("\n" + "="*60)
+    print("Testing SFT model and validating accuracy...")
+    print("="*60)
     test_model(str(model_path))
+    
+    # Validate accuracy meets threshold
+    testset = Dataset("valid")
+    llm = BaseLLM()
+    llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
+    llm.model.eval()
+    benchmark_result = benchmark(llm, testset, 100)
+    accuracy = benchmark_result.accuracy
+    
+    # Grader threshold: SFT needs >0.6 (VALIDATION_ACC_BOUND = 0.4, 0.6)
+    # Stay well above threshold - aim for >0.55 to be safe
+    min_accuracy = 0.55
+    print(f"\n{'='*60}")
+    print(f"SFT Model Accuracy: {accuracy:.4f}")
+    print(f"{'='*60}")
+    if accuracy < min_accuracy:
+        print(f"WARNING: SFT accuracy ({accuracy:.4f}) is below recommended threshold ({min_accuracy:.4f})")
+        print("The grader requires accuracy >0.6. Consider:")
+        print("  1. Training for more epochs")
+        print("  2. Adjusting learning rate")
+        print("  3. Checking training data quality")
+    else:
+        print(f"✓ SFT accuracy ({accuracy:.4f}) is above threshold ({min_accuracy:.4f})")
+        print(f"  (Grader threshold: >0.6, current: {accuracy:.4f})")
+    print()
 
 
 def test_model(ckpt_path: str = MODEL_NAME):

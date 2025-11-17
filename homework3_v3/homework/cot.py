@@ -38,16 +38,27 @@ class CoTModel(BaseLLM):
         # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
-        # Preventing OOM
-        micro_batch_size = 32
+        # Preventing OOM - reduce batch size significantly when using num_return_sequences
+        # because it multiplies the memory usage
+        if num_return_sequences is not None and num_return_sequences > 1:
+            # When generating multiple sequences, use much smaller batch size
+            micro_batch_size = 1  # Process one prompt at a time
+        else:
+            micro_batch_size = 32
+            
         if len(prompts) > micro_batch_size:
-            return [
-                r
-                for idx in tqdm(
-                    range(0, len(prompts), micro_batch_size), desc=f"LLM Running on Micro Batches {micro_batch_size}"
+            results = []
+            for idx in tqdm(
+                range(0, len(prompts), micro_batch_size), desc=f"LLM Running on Micro Batches {micro_batch_size}"
+            ):
+                batch_results = self.batched_generate(
+                    prompts[idx : idx + micro_batch_size], num_return_sequences, temperature
                 )
-                for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
-            ]
+                results.extend(batch_results)
+                # Clear CUDA cache after each micro-batch to free memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            return results
 
         # Use format_prompt to handle prompt formatting for each prompt
         formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
@@ -63,8 +74,15 @@ class CoTModel(BaseLLM):
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id
 
+        # Adjust max_new_tokens based on whether we're generating multiple sequences
+        # to balance quality and memory usage
+        if num_return_sequences is not None and num_return_sequences > 1:
+            max_tokens = 100  # Slightly reduced for RFT generation to save memory
+        else:
+            max_tokens = 120  # Full tokens for single generation
+            
         generation_kwargs = {
-            "max_new_tokens": 120,  # Increased further for better CoT reasoning
+            "max_new_tokens": max_tokens,
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -80,24 +98,59 @@ class CoTModel(BaseLLM):
         else:
             generation_kwargs["do_sample"] = False
             
-        # Handle multiple return sequences
-        if num_return_sequences is not None:
-            generation_kwargs["num_return_sequences"] = num_return_sequences
-        
-        # Generate responses with inference mode for maximum speed
-        with torch.inference_mode():
-            outputs = self.model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                **generation_kwargs,
-            )
+        # Handle multiple return sequences - chunk them to avoid OOM
+        if num_return_sequences is not None and num_return_sequences > 5:
+            # If requesting many sequences, generate them in chunks
+            all_generations = []
+            chunk_size = 5
+            for i in range(0, num_return_sequences, chunk_size):
+                current_chunk = min(chunk_size, num_return_sequences - i)
+                generation_kwargs["num_return_sequences"] = current_chunk
+                
+                # Generate responses with inference mode for maximum speed
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        input_ids=inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        **generation_kwargs,
+                    )
+                
+                # Decode only the generated tokens
+                input_length = inputs["input_ids"].shape[1]
+                generated_tokens = outputs[:, input_length:]
+                
+                # Decode the generated tokens
+                chunk_generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+                all_generations.extend(chunk_generations)
+                
+                # Clear cache after each chunk
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            generations = all_generations
+        else:
+            # For smaller num_return_sequences, generate all at once
+            if num_return_sequences is not None:
+                generation_kwargs["num_return_sequences"] = num_return_sequences
+            
+            # Generate responses with inference mode for maximum speed
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    **generation_kwargs,
+                )
 
-        # Decode only the generated tokens
-        input_length = inputs["input_ids"].shape[1]
-        generated_tokens = outputs[:, input_length:]
+            # Decode only the generated tokens
+            input_length = inputs["input_ids"].shape[1]
+            generated_tokens = outputs[:, input_length:]
 
-        # Decode the generated tokens
-        generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            # Decode the generated tokens
+            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            
+            # Clear cache after generation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content

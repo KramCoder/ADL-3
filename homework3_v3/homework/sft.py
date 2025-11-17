@@ -300,7 +300,7 @@ def train_model(
         # Use relative path to ensure consistent resolution with datagen's _resolve_output_path
         # This ensures the path is resolved the same way whether called from sft.py or directly
         relative_path = "data/rft.json"
-        generated_path = generate_dataset(relative_path, oversample=15, temperature=0.7)
+        generated_path = generate_dataset(relative_path, oversample=10, temperature=0.7)
         # Verify the generated path matches what we expect
         resolved_generated = Path(generated_path).resolve()
         resolved_expected = rft_data_path.resolve()

@@ -45,6 +45,14 @@ class BenchmarkResult:
             for item, answer in zip(dataset, answers[:max_question])
         ]
         n = min(len(dataset), max_question)
+        # Prevent division by zero - return 0.0 for accuracy/answer_rate if n is 0
+        # This ensures the grader never receives NaN values
+        if n == 0:
+            return cls(
+                accuracy=0.0,
+                answer_rate=0.0,
+                samples=samples,
+            )
         return cls(
             accuracy=sum(sample.is_correct for sample in samples) / n,
             answer_rate=sum(sample.answer == sample.answer for sample in samples) / n,

@@ -126,6 +126,11 @@ class BaseLLM:
         # Decode the generated tokens
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
+        # Ensure decoded output is not empty to prevent NaN in grader's loss computation
+        # If empty, provide a default value that can be properly tokenized
+        if not decoded or decoded.strip() == "":
+            decoded = "0"
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
         return f"<answer>{decoded}"
 
@@ -238,6 +243,10 @@ class BaseLLM:
 
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Ensure decoded outputs are not empty to prevent NaN in grader's loss computation
+        # If empty, provide a default value that can be properly tokenized
+        generations = [gen if gen and gen.strip() else "0" for gen in generations]
         
         # Prepend <answer> tag to complete the format since it's part of the prompt
         generations = [f"<answer>{gen}" for gen in generations]

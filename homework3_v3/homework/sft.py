@@ -18,8 +18,20 @@ DEFAULT_LORA_RANK = 4
 def _resolve_path(path: str | Path) -> Path:
     candidate = Path(path)
     if candidate.is_absolute():
-        return candidate
-    return Path(__file__).parent / candidate
+        return candidate.resolve()
+    # If path is relative, resolve it relative to the homework directory
+    # Handle cases where path might already include "homework" prefix
+    homework_dir = Path(__file__).parent.resolve()
+    # If the path starts with "homework/", remove that prefix to avoid duplication
+    path_str = str(candidate)
+    # Remove any leading "homework/" or "./homework/" prefixes
+    if path_str.startswith("homework/"):
+        path_str = path_str[len("homework/"):]
+    elif path_str.startswith("./homework/"):
+        path_str = path_str[len("./homework/"):]
+    # Also handle if path already contains the homework directory
+    resolved = (homework_dir / path_str).resolve()
+    return resolved
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
@@ -435,9 +447,41 @@ def train_model(
                 else:
                     print(f"{key}: {value}")
     
+    # Also print learning rate from training state if available
+    if hasattr(trainer.state, 'log_history') and len(trainer.state.log_history) > 0:
+        # Get the last logged learning rate
+        last_log = trainer.state.log_history[-1]
+        if 'learning_rate' in last_log:
+            print(f"Final Learning Rate: {last_log['learning_rate']:.2e}")
+    
     # Save the final model
     print(f"\nSaving model to {model_path}")
+    # Ensure the directory exists
+    model_path.mkdir(parents=True, exist_ok=True)
+    
+    # Set model to eval mode before saving (best practice)
+    lora_model.eval()
+    
+    # Save the PEFT adapter
     trainer.save_model(str(model_path))
+    
+    # Set back to train mode if needed (though we're done training)
+    lora_model.train()  # Actually, we're done, but this is safe
+    
+    # Also save the tokenizer to ensure it's available for loading
+    llm.tokenizer.save_pretrained(str(model_path))
+    
+    # Verify the model was saved correctly
+    adapter_config = model_path / "adapter_config.json"
+    adapter_model = list(model_path.glob("adapter_model*.bin")) + list(model_path.glob("adapter_model*.safetensors"))
+    if adapter_config.exists() and len(adapter_model) > 0:
+        print(f"✓ Model adapter saved successfully")
+        print(f"  - Config: {adapter_config}")
+        print(f"  - Weights: {adapter_model[0]}")
+    else:
+        print(f"⚠ Warning: Model files may not have been saved correctly")
+        print(f"  - Config exists: {adapter_config.exists()}")
+        print(f"  - Weights exist: {len(adapter_model) > 0}")
     
     # Test the model
     print("Testing model...")
@@ -447,16 +491,77 @@ def train_model(
 def test_model(ckpt_path: str = MODEL_NAME):
     testset = Dataset("valid")
     model_path = _resolve_path(ckpt_path)
-    _ensure_adapter(model_path)
-
+    
+    # Check if model files exist
+    adapter_config = model_path / "adapter_config.json"
+    if not adapter_config.exists():
+        print(f"Warning: Model adapter not found at {model_path}")
+        print("Attempting to create default adapter...")
+        _ensure_adapter(model_path)
+    
     llm = BaseLLM()
-    llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
-    llm.model.eval()
+    
+    # Load the PEFT model
+    try:
+        # Load the adapter onto the base model
+        llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
+        llm.model.eval()
+        
+        # Verify the adapter is loaded
+        if hasattr(llm.model, 'peft_config') and llm.model.peft_config:
+            print(f"✓ Successfully loaded PEFT adapter from {model_path}")
+            print(f"  Adapter type: {type(llm.model).__name__}")
+        else:
+            print(f"⚠ Warning: PEFT adapter may not be loaded correctly")
+    except Exception as e:
+        print(f"✗ Error loading model from {model_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        print("Falling back to base model...")
+        # Fall back to base model if loading fails
+        llm.model.eval()
+    
     # DO NOT apply dataset answer patch - we want to test the actual trained model
     # apply_dataset_answer_patch(llm)
-
+    
+    # Test with a small sample first to verify generation works
+    print("Testing generation on a sample question...")
+    sample_question = testset[0][0]
+    
+    # Check what format_prompt produces
+    formatted_prompt = llm.format_prompt(sample_question)
+    print(f"Formatted prompt: {formatted_prompt!r}")
+    
+    # Generate raw output to see what the model produces
+    raw_generation = llm.generate(sample_question)
+    print(f"Raw generation: {raw_generation!r}")
+    
+    # Get parsed answer
+    sample_answer = llm.answer(sample_question)
+    print(f"Sample question: {sample_question}")
+    print(f"Sample answer (parsed): {sample_answer[0]}")
+    print(f"Expected answer: {testset[0][1]}")
+    
+    # Test a few more samples to see pattern
+    print("\nTesting a few more samples...")
+    for i in range(min(3, len(testset))):
+        q = testset[i][0]
+        a = llm.answer(q)
+        raw = llm.generate(q)
+        print(f"  Q{i+1}: {q[:50]}...")
+        print(f"    Raw: {raw[:100]!r}")
+        print(f"    Parsed: {a[0]}, Expected: {testset[i][1]}")
+    
     benchmark_result = benchmark(llm, testset, 100)
-    print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
+    print(f"\n{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
+    
+    # Show some incorrect samples if accuracy is low
+    if benchmark_result.accuracy < 0.1:
+        print("\nSample incorrect answers:")
+        for sample in benchmark_result.samples[:5]:
+            if not sample.is_correct:
+                print(f"  Q: {sample.question[:60]}...")
+                print(f"    Got: {sample.answer}, Expected: {sample.correct_answer}")
 
 
 if __name__ == "__main__":

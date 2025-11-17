@@ -51,6 +51,12 @@ for i in range(3):
     raw_output = llm.generate(question)
     print(f"Model output: {raw_output!r}")
     
+    # Verify format
+    if raw_output.startswith("<answer>") and "</answer>" in raw_output:
+        print("  ✅ Full format: <answer>value</answer>")
+    else:
+        print(f"  ⚠️  Unexpected format")
+    
     # Parse
     parsed = llm.parse_answer(raw_output)
     

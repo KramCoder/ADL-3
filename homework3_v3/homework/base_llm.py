@@ -5,6 +5,8 @@ from typing import overload
 # Suppress CUDA/TensorFlow warnings early, before any imports that might trigger them
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("XLA_FLAGS", "--xla_gpu_force_compilation_parallelism=1")
+# Set PyTorch CUDA allocator config for better memory management (prevents fragmentation)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # Filter Python warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*cuFFT.*")

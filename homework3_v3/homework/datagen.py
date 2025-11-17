@@ -42,6 +42,7 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     # Process questions one at a time to ensure proper handling
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         # Generate multiple sequences (10-20) per question
+        # The batched_generate method will handle memory optimization internally
         generations = model.batched_generate(
             [model.format_prompt(question)],
             num_return_sequences=oversample,
@@ -75,8 +76,11 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             rejected_count += 1
         
         # Clear CUDA cache after each question to prevent OOM
+        # Also delete the generations list to free Python memory
+        del generations, generations_list
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure cleanup completes
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

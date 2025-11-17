@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 import warnings
@@ -41,18 +42,19 @@ class CoTModel(BaseLLM):
         # When generating multiple sequences per prompt, reduce batch size to prevent OOM
         # High num_return_sequences multiplies memory usage significantly
         if num_return_sequences is not None and num_return_sequences > 5:
-            # For high num_return_sequences, process prompts one at a time or in very small batches
+            # For high num_return_sequences, process prompts one at a time to minimize memory
             # This prevents memory explosion when num_return_sequences * batch_size is large
-            max_batch_size = max(1, 8 // num_return_sequences)  # Adaptive batch size
-            if len(prompts) > max_batch_size:
+            # When num_return_sequences is high, process one prompt at a time
+            if len(prompts) > 1:
                 results = []
-                for idx in range(0, len(prompts), max_batch_size):
-                    batch_prompts = prompts[idx : idx + max_batch_size]
-                    batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
+                for prompt in prompts:
+                    batch_results = self.batched_generate([prompt], num_return_sequences, temperature)
                     results.extend(batch_results)
-                    # Clear cache after each batch to prevent OOM
+                    # Aggressively clear cache after each prompt to prevent OOM
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    gc.collect()
                 return results
         
         # Preventing OOM for regular batching
@@ -80,8 +82,15 @@ class CoTModel(BaseLLM):
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id
 
+        # Reduce max_new_tokens when generating multiple sequences to save memory
+        # High num_return_sequences multiplies memory usage, so reduce tokens per sequence
+        if num_return_sequences is not None and num_return_sequences > 5:
+            max_new_tokens = 100  # Reduced for high num_return_sequences to save memory
+        else:
+            max_new_tokens = 120  # Full length for single or few sequences
+        
         generation_kwargs = {
-            "max_new_tokens": 120,  # Increased further for better CoT reasoning
+            "max_new_tokens": max_new_tokens,
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
@@ -116,9 +125,14 @@ class CoTModel(BaseLLM):
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
-        # Clear CUDA cache after generation to free memory, especially important for high num_return_sequences
+        # Clear inputs, outputs, and generated_tokens to free memory after decoding
+        del inputs, outputs, generated_tokens
+        
+        # Aggressively clear CUDA cache after generation to free memory, especially important for high num_return_sequences
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        gc.collect()
         
         # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content

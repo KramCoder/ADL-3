@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 from typing import Any
@@ -39,9 +40,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     records: list[list[Any]] = []
     rejected_count = 0
 
-    # Process questions one at a time to ensure proper handling
+    # Process questions one at a time to ensure proper handling and minimize memory usage
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         # Generate multiple sequences (10-20) per question
+        # Process one question at a time to minimize memory usage
         generations = model.batched_generate(
             [model.format_prompt(question)],
             num_return_sequences=oversample,
@@ -70,13 +72,18 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
                 found_correct = True
                 break
         
+        # Clear generations list to free memory
+        del generations, generations_list
+        
         # If no correct answer found, ignore this data point (as per instructions)
         if not found_correct:
             rejected_count += 1
         
-        # Clear CUDA cache after each question to prevent OOM
+        # Aggressively clear CUDA cache and run garbage collection after each question
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all operations are complete
+        gc.collect()  # Force Python garbage collection
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

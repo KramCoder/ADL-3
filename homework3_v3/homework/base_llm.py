@@ -18,7 +18,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-checkpoint = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+# Use 360M model by default to meet the 380M parameter limit required by the grader
+# The 1.7B model should only be used for RFT data generation
+checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 

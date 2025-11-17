@@ -38,22 +38,58 @@ class CoTModel(BaseLLM):
         # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
-        # When generating multiple sequences per prompt, reduce batch size to prevent OOM
+        # When generating multiple sequences per prompt, process in smaller chunks to prevent OOM
         # High num_return_sequences multiplies memory usage significantly
-        if num_return_sequences is not None and num_return_sequences > 5:
-            # For high num_return_sequences, process prompts one at a time or in very small batches
-            # This prevents memory explosion when num_return_sequences * batch_size is large
-            max_batch_size = max(1, 8 // num_return_sequences)  # Adaptive batch size
-            if len(prompts) > max_batch_size:
-                results = []
-                for idx in range(0, len(prompts), max_batch_size):
-                    batch_prompts = prompts[idx : idx + max_batch_size]
-                    batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
-                    results.extend(batch_results)
-                    # Clear cache after each batch to prevent OOM
+        # Strategy: Generate sequences in smaller batches (e.g., 3-5 at a time) instead of all at once
+        if num_return_sequences is not None and num_return_sequences > 3:
+            # For high num_return_sequences, generate sequences in chunks to reduce memory usage
+            # This is more memory-efficient than processing all sequences at once
+            chunk_size = min(3, num_return_sequences)  # Generate 3 sequences at a time max
+            
+            # Process prompts one at a time when num_return_sequences is very high
+            if num_return_sequences > 10:
+                all_results = []
+                for prompt in prompts:
+                    prompt_results = []
+                    # Generate sequences in chunks
+                    for chunk_start in range(0, num_return_sequences, chunk_size):
+                        chunk_end = min(chunk_start + chunk_size, num_return_sequences)
+                        chunk_num_sequences = chunk_end - chunk_start
+                        
+                        # Generate this chunk of sequences
+                        chunk_results = self.batched_generate(
+                            [prompt], 
+                            num_return_sequences=chunk_num_sequences, 
+                            temperature=temperature
+                        )
+                        prompt_results.extend(chunk_results[0])
+                        
+                        # Aggressive memory cleanup after each chunk
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                    
+                    all_results.append(prompt_results)
+                    # Clear cache after each prompt
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                return results
+                
+                return all_results
+            else:
+                # For moderate num_return_sequences (4-10), process prompts one at a time
+                # but generate all sequences for each prompt at once
+                max_batch_size = max(1, 4 // num_return_sequences)  # Adaptive batch size
+                if len(prompts) > max_batch_size:
+                    results = []
+                    for idx in range(0, len(prompts), max_batch_size):
+                        batch_prompts = prompts[idx : idx + max_batch_size]
+                        batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
+                        results.extend(batch_results)
+                        # Clear cache after each batch to prevent OOM
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                    return results
         
         # Preventing OOM for regular batching
         micro_batch_size = 32
@@ -80,12 +116,21 @@ class CoTModel(BaseLLM):
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id
 
+        # Adjust memory usage based on num_return_sequences
+        # When generating many sequences, reduce max_new_tokens and disable cache to save memory
+        max_tokens = 120
+        use_cache = True
+        if num_return_sequences is not None and num_return_sequences > 5:
+            # Reduce max tokens and disable cache when memory is tight
+            max_tokens = 100
+            use_cache = False  # Disable KV cache to save memory
+        
         generation_kwargs = {
-            "max_new_tokens": 120,  # Increased further for better CoT reasoning
+            "max_new_tokens": max_tokens,
             "min_new_tokens": 1,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": pad_token_id,
-            "use_cache": True,
+            "use_cache": use_cache,
         }
 
         # Handle sampling vs greedy decoding
@@ -116,9 +161,13 @@ class CoTModel(BaseLLM):
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
+        # Delete intermediate tensors to free memory immediately
+        del outputs, generated_tokens, inputs
+        
         # Clear CUDA cache after generation to free memory, especially important for high num_return_sequences
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all operations complete before continuing
         
         # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content

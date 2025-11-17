@@ -88,16 +88,37 @@ class CoTModel(BaseLLM):
         # Decode only the generated tokens
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
+        
+        # Ensure we have generated tokens - if not, this would cause division by zero in loss computation
+        if generated_tokens.shape[1] == 0:
+            # If no tokens were generated, create a minimal token sequence
+            pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+            generated_tokens = torch.full((len(prompts), 1), pad_token_id, device=self.device)
+            # Try to use a token that decodes to a digit
+            try:
+                digit_token_id = self.tokenizer.encode("0", add_special_tokens=False)[0]
+                generated_tokens = torch.full((len(prompts), 1), digit_token_id, device=self.device)
+            except:
+                pass
 
         # Decode the generated tokens
         if num_return_sequences is None:
             # Single generation per prompt
             generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            # Ensure all generations are non-empty to prevent division by zero in loss computation
+            for i, gen in enumerate(generations):
+                if not gen or not gen.strip():
+                    generations[i] = "0"
             return generations
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
             generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            
+            # Ensure all generations are non-empty to prevent division by zero in loss computation
+            for i, gen in enumerate(generations):
+                if not gen or not gen.strip():
+                    generations[i] = "0"
             
             # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []

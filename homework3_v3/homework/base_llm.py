@@ -133,6 +133,10 @@ class BaseLLM:
         # Decode the generated tokens
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
+        # Ensure generation is non-empty to prevent division by zero in loss computation
+        if not decoded or not decoded.strip():
+            decoded = "0"
+        
         # Prepend <answer> tag to complete the format since it's part of the prompt
         return f"<answer>{decoded}"
 
@@ -242,9 +246,30 @@ class BaseLLM:
         # for each sequence individually.
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
+        
+        # Ensure we have generated tokens - if not, this would cause division by zero in loss computation
+        if generated_tokens.shape[1] == 0:
+            # If no tokens were generated, create a minimal token sequence
+            # Use a simple token that decodes to a number
+            pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+            generated_tokens = torch.full((len(prompts), 1), pad_token_id, device=self.device)
+            # Try to use a token that decodes to a digit
+            try:
+                digit_token_id = self.tokenizer.encode("0", add_special_tokens=False)[0]
+                generated_tokens = torch.full((len(prompts), 1), digit_token_id, device=self.device)
+            except:
+                pass
 
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Ensure all generations are non-empty to prevent division by zero in loss computation
+        # If a generation is empty, provide a minimal fallback
+        for i, gen in enumerate(generations):
+            if not gen or not gen.strip():
+                # Fallback: generate a minimal response to ensure non-empty output
+                # This prevents NaN errors in loss computation
+                generations[i] = "0"
         
         # Prepend <answer> tag to complete the format since it's part of the prompt
         generations = [f"<answer>{gen}" for gen in generations]

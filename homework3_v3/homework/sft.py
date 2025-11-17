@@ -359,6 +359,7 @@ def train_model(
     else:
         training_args_dict["num_train_epochs"] = 3
         training_args_dict["save_strategy"] = "epoch"
+        training_args_dict["save_steps"] = 1000  # Also save periodically
     
     training_args = TrainingArguments(**training_args_dict)
     
@@ -419,6 +420,9 @@ def train_model(
     print("Starting training...")
     train_result = trainer.train()
     
+    # Ensure model is back in eval mode after training
+    lora_model.eval()
+    
     # Print training metrics summary
     print("\n" + "=" * 60)
     print("Training Summary:")
@@ -437,26 +441,103 @@ def train_model(
     
     # Save the final model
     print(f"\nSaving model to {model_path}")
+    
+    # Ensure model is in eval mode before saving
+    lora_model.eval()
+    
+    # For PEFT models, save_model saves the adapter weights
+    # This should save adapter_config.json and adapter_model.safetensors (or .bin)
     trainer.save_model(str(model_path))
     
-    # Test the model
+    # Also explicitly save the adapter state to ensure it's written
+    # This is redundant but ensures the adapter is definitely saved
+    lora_model.save_pretrained(str(model_path), safe_serialization=True)
+    
+    # Verify the adapter files were created
+    adapter_config = model_path / "adapter_config.json"
+    adapter_weights = list(model_path.glob("adapter_model.*"))
+    adapter_files = [adapter_config] + adapter_weights if adapter_config.exists() else adapter_weights
+    
+    if adapter_config.exists() and adapter_weights:
+        print(f"✓ Adapter files saved successfully:")
+        print(f"  - {adapter_config.name}")
+        for f in adapter_weights:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            print(f"  - {f.name} ({size_mb:.2f} MB)")
+    else:
+        print(f"⚠ WARNING: Adapter files incomplete in {model_path}")
+        print(f"  adapter_config.json exists: {adapter_config.exists()}")
+        print(f"  adapter weight files: {[f.name for f in adapter_weights]}")
+        print(f"  Directory contents: {[f.name for f in model_path.iterdir()]}")
+        
+        # Try to save again if files are missing
+        if not adapter_config.exists() or not adapter_weights:
+            print("  Attempting to save adapter again...")
+            lora_model.save_pretrained(str(model_path), safe_serialization=True)
+            adapter_config = model_path / "adapter_config.json"
+            adapter_weights = list(model_path.glob("adapter_model.*"))
+            if adapter_config.exists() and adapter_weights:
+                print("  ✓ Adapter files saved on retry")
+            else:
+                print("  ✗ Failed to save adapter files - model may not be trainable")
+    
+    # Test the model using the relative path (test_model will resolve it)
     print("Testing model...")
-    test_model(str(model_path))
+    # Use relative path from homework/ directory
+    if model_path.is_absolute():
+        try:
+            relative_path = model_path.relative_to(Path(__file__).parent)
+        except ValueError:
+            # If not relative to homework/, use the output_dir parameter
+            relative_path = Path(output_dir)
+    else:
+        relative_path = Path(output_dir)
+    test_model(str(relative_path))
 
 
 def test_model(ckpt_path: str = MODEL_NAME):
     testset = Dataset("valid")
     model_path = _resolve_path(ckpt_path)
-    _ensure_adapter(model_path)
+    
+    # Verify adapter files exist before loading
+    adapter_config = model_path / "adapter_config.json"
+    adapter_weights = list(model_path.glob("adapter_model.*"))
+    
+    if not adapter_config.exists():
+        print(f"⚠ WARNING: adapter_config.json not found in {model_path}")
+        print(f"  This might be an untrained adapter. Creating default adapter...")
+        _ensure_adapter(model_path)
+    elif not adapter_weights:
+        print(f"⚠ WARNING: No adapter weight files found in {model_path}")
+        print(f"  Found files: {list(model_path.iterdir())}")
+        print(f"  This suggests the model wasn't saved correctly during training.")
+        _ensure_adapter(model_path)
+    else:
+        print(f"✓ Found adapter files: {[f.name for f in adapter_weights]}")
 
     llm = BaseLLM()
-    llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
-    llm.model.eval()
+    try:
+        llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
+        llm.model.eval()
+        print(f"✓ Model loaded successfully from {model_path}")
+    except Exception as e:
+        print(f"✗ ERROR: Failed to load model from {model_path}: {e}")
+        print(f"  Falling back to base model (untrained)")
+        # Fallback to base model
+        llm.model.eval()
+    
     # DO NOT apply dataset answer patch - we want to test the actual trained model
     # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")
+    
+    # Print a few sample outputs for debugging
+    if benchmark_result.accuracy == 0.0:
+        print("\n⚠ Debugging: Sample outputs (first 3):")
+        for i, sample in enumerate(benchmark_result.samples[:3]):
+            print(f"  Q: {sample.question}")
+            print(f"  Expected: {sample.correct_answer}, Got: {sample.answer}, Correct: {sample.is_correct}")
 
 
 if __name__ == "__main__":

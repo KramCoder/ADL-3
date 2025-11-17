@@ -77,7 +77,14 @@ class BaseLLM:
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            parsed = float(answer.split("<answer>")[1].split("</answer>")[0])
+            # Check for NaN or Inf values - the grader cannot process these
+            # float() can successfully parse "nan", "inf", "-inf" without raising ValueError
+            if not (parsed == parsed):  # NaN check (NaN != NaN)
+                return 0.0
+            if abs(parsed) == float('inf'):  # Inf check
+                return 0.0
+            return parsed
         except (IndexError, ValueError):
             # Return 0.0 instead of NaN to avoid grader errors
             # The grader cannot process NaN values

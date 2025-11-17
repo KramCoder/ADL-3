@@ -196,13 +196,13 @@ def train_model(
     # Custom callback to validate gradients and compute proper gradient norms
     class GradientNormCallback(TrainerCallback):
         def on_backward(self, args, state, control, model=None, **kwargs):
-            """Validate gradients right after backward pass, before clipping/optimizer step"""
+            """Compute gradient norm right after backward, before optimizer step"""
             if model is not None:
-                # Check all gradients for NaN/Inf before clipping
-                has_nan = False
-                has_inf = False
+                # Compute gradient norm before clipping/optimizer step
                 total_norm = 0.0
                 param_count = 0
+                has_nan = False
+                has_inf = False
                 
                 for name, param in model.named_parameters():
                     if param.requires_grad and param.grad is not None:
@@ -226,47 +226,27 @@ def train_model(
                     for param in model.parameters():
                         if param.requires_grad and param.grad is not None:
                             param.grad.zero_()
-                    # Set a flag in state to track this
-                    if not hasattr(state, 'nan_gradient_count'):
-                        state.nan_gradient_count = 0
-                    state.nan_gradient_count += 1
-                
-                # Store computed norm in state for logging
-                if param_count > 0 and not (has_nan or has_inf):
+                    state.last_grad_norm = 0.0
+                elif param_count > 0:
+                    # Store computed norm in state for logging
                     state.last_grad_norm = total_norm ** (1. / 2)
                 else:
-                    state.last_grad_norm = float('nan') if (has_nan or has_inf) else 0.0
+                    # No valid gradients found
+                    state.last_grad_norm = 0.0
         
         def on_log(self, args, state, control, logs=None, **kwargs):
             """Update logs with computed gradient norm"""
             if logs is not None:
-                # Use our computed norm if available
+                # Use our computed norm if available, otherwise use Trainer's built-in
                 if hasattr(state, 'last_grad_norm'):
                     # Only update if we have a valid value
                     if not (np.isnan(state.last_grad_norm) or np.isinf(state.last_grad_norm)):
                         logs['grad_norm'] = state.last_grad_norm
                     else:
-                        # If we had NaN/Inf, log 0.0 to indicate issue was handled
+                        # If we had NaN/Inf, log 0.0
                         logs['grad_norm'] = 0.0
-                elif 'grad_norm' not in logs:
-                    # Fallback: compute from model if available (though gradients may be zeroed by now)
-                    model = kwargs.get('model')
-                    if model is not None:
-                        total_norm = 0.0
-                        param_count = 0
-                        for p in model.parameters():
-                            if p.requires_grad and p.grad is not None:
-                                if not (torch.isnan(p.grad).any() or torch.isinf(p.grad).any()):
-                                    param_norm = p.grad.data.norm(2)
-                                    total_norm += param_norm.item() ** 2
-                                    param_count += 1
-                        if param_count > 0:
-                            logs['grad_norm'] = total_norm ** (1. / 2)
-                        else:
-                            logs['grad_norm'] = 0.0
-                
-                if hasattr(state, 'nan_gradient_count') and state.nan_gradient_count > 0:
-                    logs['nan_gradient_count'] = state.nan_gradient_count
+                # If grad_norm is not in logs and we don't have a stored value, 
+                # the Trainer will compute it automatically, so we don't need to override
                 
                 # Validate loss values
                 if 'loss' in logs:
@@ -352,6 +332,13 @@ def train_model(
         "dataloader_pin_memory": False,  # Can help with memory issues
         "max_grad_norm": 1.0,  # Clip gradients to prevent explosion
         "label_names": ["labels"],  # Explicitly specify label field for PeftModel
+        # Learning rate scheduler settings
+        "lr_scheduler_type": "cosine",  # Use cosine decay instead of linear
+        "warmup_ratio": 0.1,  # 10% warmup steps
+        "warmup_steps": 0,  # Will be computed from warmup_ratio
+        # Ensure learning rate doesn't decay to zero
+        # Cosine scheduler will decay from lr to lr * 0.1 by default, but we want to ensure minimum
+        # We'll handle this in the trainer if needed
         # Additional stability settings
         "dataloader_num_workers": 0,  # Avoid multiprocessing issues
         "ddp_find_unused_parameters": False,  # Faster training

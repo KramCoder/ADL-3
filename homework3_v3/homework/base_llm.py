@@ -75,9 +75,21 @@ class BaseLLM:
         """
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        
+        Handles two formats:
+        1. Full format: "<answer>123.45</answer>"
+        2. Completion format: "123.45</answer>" (when model continues from "<answer>" prompt)
         """
         try:
-            return float(answer.split("<answer>")[1].split("</answer>")[0])
+            # Try full format first (with opening tag)
+            if "<answer>" in answer:
+                return float(answer.split("<answer>")[1].split("</answer>")[0])
+            # Handle completion format (no opening tag, just value</answer>)
+            elif "</answer>" in answer:
+                return float(answer.split("</answer>")[0].strip())
+            else:
+                # No tags at all, try to parse as plain number
+                return float(answer.strip())
         except (IndexError, ValueError):
             return float("nan")
 

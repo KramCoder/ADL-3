@@ -81,6 +81,22 @@ class BaseLLM:
         except (IndexError, ValueError):
             return float("nan")
 
+    def _ensure_answer_tags(self, text: str) -> str:
+        """
+        Some generation helpers strip the prompt (which already contains the opening
+        <answer> token) before returning the decoded text. This helper makes sure the
+        downstream parser still sees a well-formed <answer>...</answer> span by
+        inserting the tags if they were dropped during decoding.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return "<answer></answer>"
+        if "<answer>" not in cleaned:
+            cleaned = f"<answer>{cleaned}"
+        if "</answer>" not in cleaned:
+            cleaned = f"{cleaned}</answer>"
+        return cleaned
+
     def generate(self, prompt: str) -> str:
         """
         (Optional) Implement this method first and then implement batched_generate below.
@@ -121,7 +137,8 @@ class BaseLLM:
         generated_tokens = outputs[0, input_length:]
         
         # Decode and return
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return self._ensure_answer_tags(decoded)
 
     @overload
     def batched_generate(
@@ -233,12 +250,18 @@ class BaseLLM:
         # Decode the generated tokens
         if num_return_sequences is None:
             # Single generation per prompt
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            generations = [
+                self._ensure_answer_tags(text)
+                for text in self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            ]
             return generations
         else:
             # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
-            generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            generations = [
+                self._ensure_answer_tags(text)
+                for text in self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            ]
             
             # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []

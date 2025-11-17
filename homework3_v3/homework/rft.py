@@ -18,8 +18,13 @@ RFT_LORA_RANK = max(DEFAULT_LORA_RANK * 2, 8)
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = RFT_LORA_RANK) -> None:
-    adapter_file = model_path / "adapter_model.bin"
-    if adapter_file.exists():
+    # Check for both .bin and .safetensors formats (newer versions use safetensors)
+    adapter_bin = model_path / "adapter_model.bin"
+    adapter_safetensors = model_path / "adapter_model.safetensors"
+    adapter_config = model_path / "adapter_config.json"
+    
+    # If any adapter file exists, assume the adapter is already created
+    if adapter_bin.exists() or adapter_safetensors.exists() or adapter_config.exists():
         return
 
     model_path.mkdir(parents=True, exist_ok=True)

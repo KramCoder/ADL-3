@@ -288,14 +288,16 @@ def train_model(
     # Prepare dataset - load RFT data
     import json
     from pathlib import Path
+    from .datagen import generate_dataset
+    
     data_dir = Path(__file__).parent.parent / "data"
     rft_data_path = data_dir / "rft.json"
     
+    # Automatically generate RFT dataset if it doesn't exist
     if not rft_data_path.exists():
-        raise FileNotFoundError(
-            f"RFT data file not found at {rft_data_path}. "
-            "Please run datagen.py first to generate the RFT dataset."
-        )
+        print(f"RFT data file not found at {rft_data_path}. Generating dataset...")
+        generate_dataset(str(rft_data_path), oversample=15, temperature=0.7)
+        print(f"Dataset generation complete. Proceeding with training...")
     
     with rft_data_path.open() as f:
         rft_data = json.load(f)

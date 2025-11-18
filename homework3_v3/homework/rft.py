@@ -129,6 +129,11 @@ def train_model(
     
     # Validate dataset quality
     print(f"Loaded {len(rft_data)} RFT training examples")
+    if len(rft_data) == 0:
+        raise ValueError(
+            f"RFT dataset is empty at {rft_data_path}. "
+            "Please regenerate the dataset by running: python -m homework.datagen data/rft.json"
+        )
     if len(rft_data) < 850:
         print(f"WARNING: Only {len(rft_data)} examples. Target is 850-900+ for better generalization.")
     

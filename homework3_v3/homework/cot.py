@@ -56,19 +56,26 @@ class CoTModel(BaseLLM):
                 prompt_batch_size = 8 if torch.cuda.is_available() else 1
                 all_results = []
                 
+                # CRITICAL FIX: Limit chunk_size to 3 to prevent infinite recursion
+                # When we recursively call batched_generate, we need to ensure it doesn't
+                # enter this same >= 10 path again. By limiting chunk_size to 3, recursive
+                # calls will have num_return_sequences <= 3, avoiding the recursive path.
+                safe_chunk_size = min(3, chunk_size)
+                
                 for prompt_batch_idx in range(0, len(prompts), prompt_batch_size):
                     batch_prompts = prompts[prompt_batch_idx:prompt_batch_idx + prompt_batch_size]
                     batch_results = []
                     
                     for prompt in batch_prompts:
                         prompt_results = []
-                        num_chunks = (num_return_sequences + chunk_size - 1) // chunk_size
+                        num_chunks = (num_return_sequences + safe_chunk_size - 1) // safe_chunk_size
                         # Generate sequences in chunks
-                        for chunk_idx, chunk_start in enumerate(range(0, num_return_sequences, chunk_size)):
-                            chunk_end = min(chunk_start + chunk_size, num_return_sequences)
+                        for chunk_idx, chunk_start in enumerate(range(0, num_return_sequences, safe_chunk_size)):
+                            chunk_end = min(chunk_start + safe_chunk_size, num_return_sequences)
                             chunk_num_sequences = chunk_end - chunk_start
                             
                             # Generate this chunk of sequences (recursive call with smaller num_return_sequences)
+                            # chunk_num_sequences will be <= 3, so it won't enter the >= 10 path again
                             chunk_results = self.batched_generate(
                                 [prompt], 
                                 num_return_sequences=chunk_num_sequences, 

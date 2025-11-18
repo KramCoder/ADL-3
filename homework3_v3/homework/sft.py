@@ -311,6 +311,13 @@ def train_model(
     with rft_data_path.open() as f:
         rft_data = json.load(f)
     
+    # Check if dataset is empty
+    if len(rft_data) == 0:
+        raise ValueError(
+            f"RFT dataset is empty at {rft_data_path}. "
+            "Please regenerate the dataset by running: python -m homework.datagen data/rft.json"
+        )
+    
     # RFT data format: [question, correct_answer, reasoning]
     # We'll create a simple list-like object for compatibility
     class RFTDataset:

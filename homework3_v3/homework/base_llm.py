@@ -114,6 +114,10 @@ class BaseLLM:
         """
         formatted_prompt = self.format_prompt(prompt)
         
+        # Ensure consistent tokenizer state (reset padding_side to default for single-item generation)
+        original_padding_side = getattr(self.tokenizer, 'padding_side', 'right')
+        self.tokenizer.padding_side = 'right'
+        
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
         
         pad_token_id = self.tokenizer.pad_token_id
@@ -144,6 +148,9 @@ class BaseLLM:
         test_tokens = self.tokenizer(decoded_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
         if test_tokens["input_ids"].shape[1] < 2:
             decoded_stripped = decoded_stripped + " 0"
+        
+        # Restore original padding_side
+        self.tokenizer.padding_side = original_padding_side
         
         return decoded_stripped
 

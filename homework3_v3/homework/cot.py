@@ -247,23 +247,6 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "user",
-                "content": "Convert 5 quart to pint?",
-            },
-            {
-                "role": "assistant",
-                "content": "I know that 1 quart = 2 pint. So to convert 5 quart: 5 * 2 = 10 pint. <answer>10</answer>",
-
-            },
-            {
-                "role": "user",
-                "content": "How many MB is 2 G?",
-            },
-            {
-                "role": "assistant",
-                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = 2000 MB. <answer>2000</answer>",
-            },
-            {
-                "role": "user",
                 "content": question,  # Add the actual question here
             },
         ]

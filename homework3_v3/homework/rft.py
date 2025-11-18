@@ -87,14 +87,19 @@ def train_model(
     
     model_path = _resolve_path(output_dir)
     
-    # Load base model and create LoRA adapter
-    llm = BaseLLM()
+    # Load base model with FP32 for training stability (mixed precision will be handled by Trainer)
+    llm = BaseLLM(use_fp32_for_training=True)
+    
+    # Optimize LoRA rank for speed while maintaining quality
+    # Reduced from 32 to 24 for faster training
+    optimized_rank = 24
+    
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
         bias="none",
-        r=RFT_LORA_RANK,
-        lora_alpha=max(RFT_LORA_RANK * 4, 4),
+        r=optimized_rank,
+        lora_alpha=optimized_rank * 2,  # 2x alpha for stability
         lora_dropout=0.0,
         inference_mode=False,  # CRITICAL: Must be False for training
     )
@@ -154,18 +159,70 @@ def train_model(
     rft_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
     
-    # Training arguments
+    # Determine precision settings - prefer bf16 for speed and stability
+    use_bf16 = False
+    use_fp16 = False
+    use_tf32 = False
+    
+    if torch.cuda.is_available():
+        # Enable TF32 for Ampere+ GPUs (A100, RTX 3090, etc.) - free ~20% speedup
+        if hasattr(torch.cuda, 'is_bf16_supported'):
+            device_capability = torch.cuda.get_device_capability()
+            # TF32 available on Ampere+ (compute capability >= 8.0)
+            if device_capability[0] >= 8:
+                use_tf32 = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                print("Enabled TF32 for faster training on Ampere+ GPU")
+        
+        # Check if bf16 is supported (Ampere+ GPUs)
+        if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+            use_bf16 = True
+            print("Using bfloat16 mixed precision for 2-3x training speedup")
+        else:
+            # Fallback to fp16 for older GPUs (Pascal, Volta, Turing)
+            use_fp16 = True
+            print("Using float16 mixed precision for 2-3x training speedup")
+    
+    # Optimized training arguments for speed
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
-        report_to="tensorboard",
+        report_to="none",  # Disable TensorBoard to save overhead
         gradient_checkpointing=True,
-        learning_rate=2e-4,
-        num_train_epochs=3,
-        per_device_train_batch_size=32,
-        save_strategy="epoch",
-        logging_steps=10,
-        save_total_limit=1,
+        
+        # Learning rate: Increased for faster convergence with fewer epochs
+        learning_rate=5e-4,  # 2.5x higher than original
+        
+        # Reduced epochs: 2 instead of 3 (33% time savings)
+        num_train_epochs=2,
+        
+        # Gradient accumulation for better memory efficiency
+        per_device_train_batch_size=16,  # Reduced from 32
+        gradient_accumulation_steps=2,  # Effective batch size still 32
+        
+        # Mixed precision training (2-3x speedup)
+        bf16=use_bf16,
+        fp16=use_fp16,
+        tf32=use_tf32,
+        
+        # Reduced logging overhead
+        logging_steps=20,  # Reduced logging frequency
+        
+        # Don't save intermediate checkpoints to save time
+        save_strategy="no",
+        save_total_limit=0,
+        
+        # Optimizer optimizations
+        optim="adamw_torch_fused" if torch.cuda.is_available() else "adamw_torch",
+        
+        # Additional speedups
+        dataloader_num_workers=0,  # Avoid multiprocessing overhead for small datasets
+        max_grad_norm=1.0,  # Gradient clipping for stability
+        
+        # Learning rate schedule
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.05,  # Minimal warmup
     )
     
     # Create trainer

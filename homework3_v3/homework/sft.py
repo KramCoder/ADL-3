@@ -252,11 +252,11 @@ def train_model(
     
     data_dir = Path(__file__).parent.parent / "data"
     rft_data_path = data_dir / "rft.json"
+    relative_path = "data/rft.json"
     
     if not rft_data_path.exists():
         print(f"RFT data file not found at {rft_data_path}.")
         print("Automatically generating RFT dataset...")
-        relative_path = "data/rft.json"
         generated_path = generate_dataset(relative_path, oversample=15, temperature=0.7)
         resolved_generated = Path(generated_path).resolve()
         resolved_expected = rft_data_path.resolve()

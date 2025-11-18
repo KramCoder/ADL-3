@@ -154,18 +154,48 @@ def train_model(
     rft_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
     
-    # Training arguments
+    # Determine precision settings - prefer bf16 for speed and stability
+    use_bf16 = False
+    use_fp16 = False
+    if torch.cuda.is_available():
+        # Check if bf16 is supported (Ampere+ GPUs like A100, RTX 30xx+)
+        if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+            use_bf16 = True
+            print("Using bfloat16 for training (faster and more stable than fp16)")
+        else:
+            # Fallback to fp16 if bf16 not available (older GPUs)
+            use_fp16 = True
+            print("Using float16 for training (bf16 not available)")
+    else:
+        print("Using FP32 for training (CPU/MPS)")
+    
+    # Training arguments with optimizations for speed
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
-        report_to="tensorboard",
-        gradient_checkpointing=True,
+        report_to="none",  # Disable TensorBoard to save time and space
+        gradient_checkpointing=True,  # Saves memory, allows larger batches
         learning_rate=2e-4,
         num_train_epochs=3,
-        per_device_train_batch_size=32,
-        save_strategy="epoch",
+        per_device_train_batch_size=32,  # Can increase if memory allows
+        gradient_accumulation_steps=1,  # Increase to 2-4 if you want larger effective batch size
+        save_strategy="no",  # Disable checkpoint saving during training (saves time)
+        save_total_limit=0,  # Don't keep any checkpoints
         logging_steps=10,
-        save_total_limit=1,
+        # Mixed precision training for speedup
+        bf16=use_bf16,  # 1.5-2x speedup on Ampere+ GPUs
+        fp16=use_fp16,  # Fallback for older GPUs
+        # Dataloader optimizations
+        dataloader_num_workers=0,  # Set to 0 to avoid multiprocessing overhead (can increase if data loading is bottleneck)
+        dataloader_pin_memory=True if torch.cuda.is_available() else False,  # Faster data transfer to GPU
+        # Training stability and convergence
+        max_grad_norm=1.0,  # Gradient clipping for stability
+        lr_scheduler_type="cosine",  # Cosine decay for better convergence
+        warmup_ratio=0.1,  # 10% warmup steps
+        weight_decay=0.01,  # L2 regularization
+        # Additional optimizations
+        ddp_find_unused_parameters=False,  # Faster distributed training if using multiple GPUs
+        remove_unused_columns=False,  # Keep our custom labels
     )
     
     # Create trainer

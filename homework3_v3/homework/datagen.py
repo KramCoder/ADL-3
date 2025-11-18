@@ -29,28 +29,67 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
         temperature: Sampling temperature (> 0 for diversity)
     """
     from tqdm import tqdm
+    import sys
 
     # Convert to proper types (Fire may pass these as strings from command line)
     oversample = int(oversample)
     temperature = float(temperature)
 
     dataset = Dataset("train")
+    
     # Use 1.7B model specifically for data generation as per README instructions
     # The README states: "Using the HuggingFaceTB/SmolLM2-1.7B-Instruct model should 
     # further help you obtain better rollouts."
-    model = CoTModel(checkpoint="HuggingFaceTB/SmolLM2-1.7B-Instruct")
+    print("Loading CoT model (1.7B) for RFT dataset generation...")
+    print("This may take a minute on first run (downloading model if needed)...")
+    sys.stdout.flush()
+    
+    try:
+        model = CoTModel(checkpoint="HuggingFaceTB/SmolLM2-1.7B-Instruct")
+        print("Model loaded successfully!")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"ERROR: Failed to load model: {e}")
+        raise
+    
+    # Warm up the model with a dummy generation to ensure it's ready
+    print("Warming up model (this may take 10-30 seconds)...")
+    sys.stdout.flush()
+    try:
+        _ = model.batched_generate(
+            ["How many grams are in 1 kg?"],
+            num_return_sequences=1,
+            temperature=temperature
+        )
+        print("Model warmup complete!")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"WARNING: Model warmup failed: {e}")
+        print("Continuing anyway...")
+        sys.stdout.flush()
+    
     records: list[list[Any]] = []
     rejected_count = 0
+
+    print(f"\nGenerating RFT dataset with {oversample} sequences per question...")
+    print(f"Processing {len(dataset)} questions...")
+    sys.stdout.flush()
 
     # Process questions one at a time to ensure proper handling
     for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
         # Generate multiple sequences (10-20) per question
         # The batched_generate method will handle memory optimization internally
-        generations = model.batched_generate(
-            [model.format_prompt(question)],
-            num_return_sequences=oversample,
-            temperature=temperature
-        )
+        try:
+            generations = model.batched_generate(
+                [model.format_prompt(question)],
+                num_return_sequences=oversample,
+                temperature=temperature
+            )
+        except Exception as e:
+            print(f"\nERROR generating sequences for question {idx}: {e}")
+            print(f"Question: {question[:100]}...")
+            rejected_count += 1
+            continue
         
         # generations is a list of lists, so get the first (and only) item
         generations_list = generations[0]

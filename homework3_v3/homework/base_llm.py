@@ -137,6 +137,7 @@ class BaseLLM:
         
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
+        # Match batched_generate behavior exactly for consistency
         decoded_stripped = decoded.strip()
         if not decoded_stripped:
             decoded_stripped = " 0"

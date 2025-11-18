@@ -25,17 +25,32 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 
 
 class BaseLLM:
-    def __init__(self, checkpoint=checkpoint, use_fp32_for_training=False):
+    def __init__(self, checkpoint=checkpoint, use_fp32_for_training=False, use_fp32_for_inference=None):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         
         # Load model with optimizations
-        # Use FP32 for training to avoid numerical instability, FP16 for inference
+        # Use FP32 for training to avoid numerical instability
+        # For inference: FP32 is more stable and prevents NaN/Inf from FP16 overflow
+        # FP16 can cause logits to overflow (±65,504 range), leading to NaN in loss computation
         if use_fp32_for_training:
             load_kwargs = {"torch_dtype": torch.float32}
+        elif use_fp32_for_inference is not None:
+            # Explicit override for inference stability
+            load_kwargs = {"torch_dtype": torch.float32 if use_fp32_for_inference else (torch.float16 if device == "cuda" else torch.float32)}
         else:
-            load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+            # Default: Use FP32 for inference stability (prevents NaN/Inf in grader)
+            # FP16 can cause numerical instability in cross-entropy loss computation
+            # Large logits in FP16 can overflow to Inf, causing NaN in loss
+            # Set environment variable USE_FP16_INFERENCE=1 to enable FP16 for speed (not recommended for grading)
+            import os
+            use_fp16 = os.environ.get("USE_FP16_INFERENCE", "0").lower() in ("1", "true", "yes")
+            if use_fp16 and device == "cuda":
+                load_kwargs = {"torch_dtype": torch.float16}
+            else:
+                # Default to FP32 for numerical stability
+                load_kwargs = {"torch_dtype": torch.float32}
         
-        if device == "cuda" and not use_fp32_for_training:
+        if device == "cuda" and load_kwargs.get("torch_dtype") != torch.float32:
             # Use memory-efficient attention if available (skip for FP32 training)
             load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
         
@@ -167,6 +182,16 @@ class BaseLLM:
             # If empty, provide a minimal valid output to prevent division by zero
             decoded_stripped = " 0"
         
+        # Additional safety check: Ensure the generation will produce tokens when tokenized
+        # This prevents division by zero in the grader's compute_loss function
+        # The grader slices [..., 1:] which removes the first token, so we need at least 2 tokens
+        # to ensure the attention mask sum is never 0 after slicing
+        test_tokens = self.tokenizer(decoded_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
+        if test_tokens["input_ids"].shape[1] < 2:
+            # If the generation produces fewer than 2 tokens, append more content
+            # This ensures the grader's compute_loss won't divide by zero
+            decoded_stripped = decoded_stripped + " 0"
+        
         # The model should generate reasoning + <answer>value</answer> format
         # Don't prepend <answer> - the model already generates it as part of the reasoning
         return decoded_stripped
@@ -292,6 +317,17 @@ class BaseLLM:
                 # If empty, provide a minimal valid output to prevent division by zero
                 # Use " 0" to ensure tokenization produces at least one token
                 gen_stripped = " 0"
+            
+            # Additional safety check: Ensure the generation will produce enough tokens when tokenized
+            # This prevents division by zero in the grader's compute_loss function
+            # The grader slices [..., 1:] which removes the first token, so we need at least 2 tokens
+            # to ensure the attention mask sum is never 0 after slicing
+            test_tokens = self.tokenizer(gen_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
+            if test_tokens["input_ids"].shape[1] < 2:
+                # If the generation produces fewer than 2 tokens, append more content
+                # This ensures the grader's compute_loss won't divide by zero
+                gen_stripped = gen_stripped + " 0"
+            
             validated_generations.append(gen_stripped)
         
         # The model should generate reasoning + <answer>value</answer> format

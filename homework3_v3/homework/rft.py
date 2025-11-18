@@ -14,7 +14,7 @@ from .sft import DEFAULT_LORA_RANK, TokenizedDataset, _resolve_path, tokenize
 
 
 MODEL_NAME = "rft_model"
-RFT_LORA_RANK = max(DEFAULT_LORA_RANK * 2, 16)
+RFT_LORA_RANK = max(DEFAULT_LORA_RANK * 2, 8)  # Reduced minimum to reduce file size
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = RFT_LORA_RANK) -> None:

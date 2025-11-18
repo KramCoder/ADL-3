@@ -376,7 +376,7 @@ def train_model(
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
     else:
-        training_args_dict["num_train_epochs"] = 6  # Increased from 5 to 6 epochs for better accuracy
+        training_args_dict["num_train_epochs"] = 10  # Increased from 5 to 6 epochs for better accuracy
     
     training_args = TrainingArguments(**training_args_dict)
     

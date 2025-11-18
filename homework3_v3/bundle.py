@@ -10,8 +10,9 @@ BLACKLIST = [
     "optimizer.pt", "scheduler.pt", "rng_state.pth",  # Exclude optimizer/scheduler states
     "training_args.bin", "trainer_state.json",  # Exclude training state
     "sft_output",  # Exclude intermediate training output directory
+    ".backup",  # Exclude backup files
 ]
-MAXSIZE_MB = 40
+MAXSIZE_MB = 50
 
 
 def bundle(homework_dir: str, utid: str):
@@ -31,9 +32,11 @@ def bundle(homework_dir: str, utid: str):
     print("\n".join(str(f.relative_to(homework_dir)) for f in files))
 
     # Zip all files, keeping the directory structure
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # Use ZIP_DEFLATED with compresslevel=9 for maximum compression
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for f in files:
-            zf.write(f, homework_dir.stem / f.relative_to(homework_dir))
+            if f.is_file():  # Only add files, not directories
+                zf.write(f, homework_dir.stem / f.relative_to(homework_dir))
 
     output_size_mb = output_path.stat().st_size / 1024 / 1024
 

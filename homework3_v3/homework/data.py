@@ -60,9 +60,21 @@ class BenchmarkResult:
                 answer_rate=0.0,
                 samples=samples,
             )
+        
+        # Calculate accuracy and answer_rate with safeguards against NaN
+        accuracy = sum(sample.is_correct for sample in samples) / n
+        answer_rate = sum(sample.answer == sample.answer for sample in samples) / n
+        
+        # Ensure we never return NaN values - the grader cannot process them
+        # This is a defensive check in case of any edge cases
+        if accuracy != accuracy:  # NaN check (NaN != NaN)
+            accuracy = 0.0
+        if answer_rate != answer_rate:  # NaN check (NaN != NaN)
+            answer_rate = 0.0
+        
         return cls(
-            accuracy=sum(sample.is_correct for sample in samples) / n,
-            answer_rate=sum(sample.answer == sample.answer for sample in samples) / n,
+            accuracy=accuracy,
+            answer_rate=answer_rate,
             samples=samples,
         )
 

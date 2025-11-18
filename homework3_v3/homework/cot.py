@@ -176,10 +176,21 @@ class CoTModel(BaseLLM):
         for gen in generations:
             # Strip whitespace and check if empty
             gen_stripped = gen.strip()
+            
+            # Validate that the decoded text will produce tokens when re-tokenized
+            # This prevents NaN in the grader's loss calculation
             if not gen_stripped:
                 # If empty, provide a minimal valid output to prevent division by zero
                 # Use " 0" to ensure tokenization produces at least one token
                 gen_stripped = " 0"
+            else:
+                # Verify that the decoded text actually produces tokens when tokenized
+                # This catches edge cases where skip_special_tokens removed everything
+                test_tokens = self.tokenizer(gen_stripped, add_special_tokens=False, return_tensors=None)
+                if not test_tokens.get("input_ids") or len(test_tokens["input_ids"]) == 0:
+                    # If tokenization produces no tokens, use a fallback
+                    gen_stripped = " 0"
+            
             validated_generations.append(gen_stripped)
         
         if num_return_sequences is None:

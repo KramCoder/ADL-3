@@ -60,9 +60,26 @@ class BenchmarkResult:
                 answer_rate=0.0,
                 samples=samples,
             )
+        
+        # Calculate accuracy and answer_rate with NaN protection
+        # The grader cannot process NaN values, so we must ensure these are always finite
+        correct_count = sum(sample.is_correct for sample in samples)
+        accuracy = correct_count / n if n > 0 else 0.0
+        
+        # Validate accuracy is not NaN or Inf (defensive check)
+        if accuracy != accuracy or abs(accuracy) == float('inf'):  # NaN or Inf check
+            accuracy = 0.0
+        
+        valid_answer_count = sum(sample.answer == sample.answer for sample in samples)  # Count non-NaN answers
+        answer_rate = valid_answer_count / n if n > 0 else 0.0
+        
+        # Validate answer_rate is not NaN or Inf (defensive check)
+        if answer_rate != answer_rate or abs(answer_rate) == float('inf'):  # NaN or Inf check
+            answer_rate = 0.0
+        
         return cls(
-            accuracy=sum(sample.is_correct for sample in samples) / n,
-            answer_rate=sum(sample.answer == sample.answer for sample in samples) / n,
+            accuracy=accuracy,
+            answer_rate=answer_rate,
             samples=samples,
         )
 

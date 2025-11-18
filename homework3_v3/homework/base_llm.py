@@ -165,6 +165,7 @@ class BaseLLM:
         decoded_stripped = decoded.strip()
         if not decoded_stripped:
             # If empty, provide a minimal valid output to prevent division by zero
+            # Use a valid format that won't cause numerical issues in loss computation
             decoded_stripped = " 0"
         
         # The model should generate reasoning + <answer>value</answer> format

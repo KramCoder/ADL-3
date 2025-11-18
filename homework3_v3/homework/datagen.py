@@ -75,54 +75,68 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     print(f"Processing {len(dataset)} questions...")
     sys.stdout.flush()
 
-    # Process questions one at a time to ensure proper handling
-    for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
-        # Generate multiple sequences (10-20) per question
+    # A100 optimization: Process questions in batches for parallel generation
+    # This is much faster than one-at-a-time processing
+    batch_size = 16 if torch.cuda.is_available() else 1
+    
+    # Process questions in batches
+    for batch_idx in tqdm(range(0, len(dataset.data), batch_size), desc="Generating RFT dataset"):
+        batch_data = dataset.data[batch_idx:batch_idx + batch_size]
+        batch_questions = []
+        batch_correct_answers = []
+        
+        for question, correct_answer, *_ in batch_data:
+            batch_questions.append(model.format_prompt(question))
+            batch_correct_answers.append(correct_answer)
+        
+        # Generate multiple sequences for all questions in the batch at once
         # The batched_generate method will handle memory optimization internally
         try:
-            generations = model.batched_generate(
-                [model.format_prompt(question)],
+            # Generate all sequences for all questions in batch
+            # This returns a list of lists: [question1_generations, question2_generations, ...]
+            all_generations = model.batched_generate(
+                batch_questions,
                 num_return_sequences=oversample,
                 temperature=temperature
             )
         except Exception as e:
-            print(f"\nERROR generating sequences for question {idx}: {e}")
-            print(f"Question: {question[:100]}...")
-            rejected_count += 1
+            print(f"\nERROR generating sequences for batch starting at index {batch_idx}: {e}")
+            # Reject all questions in this batch
+            rejected_count += len(batch_data)
             continue
         
-        # generations is a list of lists, so get the first (and only) item
-        generations_list = generations[0]
-        
-        # Find the first generation with a correct answer
-        found_correct = False
-        
-        for reasoning in generations_list:
-            # Verify reasoning contains answer tags
-            if "<answer>" not in reasoning or "</answer>" not in reasoning:
-                continue
+        # Process each question's generations
+        for question_idx, (question, correct_answer, *_) in enumerate(batch_data):
+            generations_list = all_generations[question_idx]
             
-            parsed_answer = model.parse_answer(reasoning)
-            # Check for NaN
-            if parsed_answer != parsed_answer:
-                continue
+            # Find the first generation with a correct answer
+            found_correct = False
             
-            # Check if answer is valid
-            if is_answer_valid(parsed_answer, correct_answer):
-                records.append([question, correct_answer, reasoning])
-                found_correct = True
-                break
+            for reasoning in generations_list:
+                # Verify reasoning contains answer tags
+                if "<answer>" not in reasoning or "</answer>" not in reasoning:
+                    continue
+                
+                parsed_answer = model.parse_answer(reasoning)
+                # Check for NaN
+                if parsed_answer != parsed_answer:
+                    continue
+                
+                # Check if answer is valid
+                if is_answer_valid(parsed_answer, correct_answer):
+                    records.append([question, correct_answer, reasoning])
+                    found_correct = True
+                    break
+            
+            # If no correct answer found, ignore this data point (as per instructions)
+            if not found_correct:
+                rejected_count += 1
         
-        # If no correct answer found, ignore this data point (as per instructions)
-        if not found_correct:
-            rejected_count += 1
-        
-        # Clear CUDA cache after each question to prevent OOM
-        # Also delete the generations list to free Python memory
-        del generations, generations_list
-        if torch.cuda.is_available():
+        # Clear CUDA cache periodically (every 4 batches) to reduce overhead
+        # A100 has plenty of memory, so we don't need to clear after every batch
+        del all_generations
+        if torch.cuda.is_available() and batch_idx % (batch_size * 4) == 0:
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()  # Ensure cleanup completes
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

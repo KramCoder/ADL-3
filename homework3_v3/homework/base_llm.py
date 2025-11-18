@@ -42,10 +42,14 @@ class BaseLLM:
             # FP16 can cause numerical instability in cross-entropy loss computation
             # Large logits in FP16 can overflow to Inf, causing NaN in loss
             # Set environment variable USE_FP16_INFERENCE=1 to enable FP16 for speed (not recommended for grading)
+            # For A100: prefer BF16 (better numerical stability than FP16, faster than FP32)
             import os
             use_fp16 = os.environ.get("USE_FP16_INFERENCE", "0").lower() in ("1", "true", "yes")
             if use_fp16 and device == "cuda":
                 load_kwargs = {"torch_dtype": torch.float16}
+            elif device == "cuda" and hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+                # A100 and newer GPUs support BF16 - faster than FP32, more stable than FP16
+                load_kwargs = {"torch_dtype": torch.bfloat16}
             else:
                 # Default to FP32 for numerical stability
                 load_kwargs = {"torch_dtype": torch.float32}
@@ -244,7 +248,8 @@ class BaseLLM:
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
         # If you run out of memory, try to reduce the micro_batch_size.
-        micro_batch_size = 32
+        # Optimized for A100 GPU (40-80GB): increased from 32 to 128
+        micro_batch_size = 128 if torch.cuda.is_available() else 32
         if len(prompts) > micro_batch_size:
             return [
                 r

@@ -23,10 +23,16 @@ class CoTModel(BaseLLM):
         # Removed apply_dataset_answer_patch to actually test the LLM
 
     def batched_generate(
-        self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0
+        self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0, _in_chunking: bool = False
     ) -> list[str] | list[list[str]]:
         """
         Override batched_generate to use more tokens for CoT reasoning.
+        
+        Args:
+            prompts: List of prompts to generate for
+            num_return_sequences: Number of sequences to generate per prompt
+            temperature: Sampling temperature
+            _in_chunking: Internal flag to prevent infinite recursion when chunking
         """
         from tqdm import tqdm
         import torch
@@ -42,7 +48,8 @@ class CoTModel(BaseLLM):
         # High num_return_sequences multiplies memory usage significantly
         # Strategy: Generate sequences in smaller batches (e.g., 3-5 at a time) instead of all at once
         # Optimized for A100: increased chunk sizes and batch processing
-        if num_return_sequences is not None and num_return_sequences > 3:
+        # CRITICAL: Only enter chunking logic if not already chunking to prevent infinite recursion
+        if num_return_sequences is not None and num_return_sequences > 3 and not _in_chunking:
             # For high num_return_sequences, generate sequences in chunks to reduce memory usage
             # This is more memory-efficient than processing all sequences at once
             # A100 can handle larger chunks: 15 sequences at a time (was 3)
@@ -68,11 +75,12 @@ class CoTModel(BaseLLM):
                             chunk_end = min(chunk_start + chunk_size, num_return_sequences)
                             chunk_num_sequences = chunk_end - chunk_start
                             
-                            # Generate this chunk of sequences (recursive call with smaller num_return_sequences)
+                            # Generate this chunk of sequences (recursive call with _in_chunking=True to prevent re-chunking)
                             chunk_results = self.batched_generate(
                                 [prompt], 
                                 num_return_sequences=chunk_num_sequences, 
-                                temperature=temperature
+                                temperature=temperature,
+                                _in_chunking=True  # Prevent infinite recursion
                             )
                             prompt_results.extend(chunk_results[0])
                         
@@ -92,7 +100,7 @@ class CoTModel(BaseLLM):
                     results = []
                     for idx in range(0, len(prompts), max_batch_size):
                         batch_prompts = prompts[idx : idx + max_batch_size]
-                        batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
+                        batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature, _in_chunking=True)
                         results.extend(batch_results)
                         # Only clear cache periodically (every 2-3 batches) to reduce overhead
                         if torch.cuda.is_available() and idx % (max_batch_size * 2) == 0:
@@ -108,7 +116,7 @@ class CoTModel(BaseLLM):
                 for idx in tqdm(
                     range(0, len(prompts), micro_batch_size), desc=f"LLM Running on Micro Batches {micro_batch_size}"
                 )
-                for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature)
+                for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature, _in_chunking)
             ]
 
         # Use format_prompt to handle prompt formatting for each prompt

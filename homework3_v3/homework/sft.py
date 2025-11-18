@@ -326,6 +326,19 @@ def train_model(
     train_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example_rft)
     
+    # Validate dataset is not empty
+    if len(tokenized_dataset) == 0:
+        raise ValueError(
+            "RFT dataset is empty! All questions were rejected during generation. "
+            "This usually means:\n"
+            "1. The CoT model failed to generate valid answers (check for recursion errors)\n"
+            "2. No generated answers matched the correct answer\n"
+            "3. All generations failed to include <answer> tags\n"
+            "Please check the datagen logs above for errors and try regenerating the dataset."
+        )
+    
+    print(f"Loaded {len(tokenized_dataset)} training examples")
+    
     # Verify tokenization works correctly - check a sample
     sample = tokenized_dataset[0]
     non_masked_labels = sum(1 for l in sample["labels"] if l != -100)

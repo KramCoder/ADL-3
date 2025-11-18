@@ -23,10 +23,16 @@ class CoTModel(BaseLLM):
         # Removed apply_dataset_answer_patch to actually test the LLM
 
     def batched_generate(
-        self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0
+        self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0, _skip_chunking: bool = False
     ) -> list[str] | list[list[str]]:
         """
         Override batched_generate to use more tokens for CoT reasoning.
+        
+        Args:
+            prompts: List of prompts to generate from
+            num_return_sequences: Number of sequences to generate per prompt
+            temperature: Sampling temperature (0 for greedy, >0 for sampling)
+            _skip_chunking: Internal flag to prevent infinite recursion in chunking logic
         """
         from tqdm import tqdm
         import torch
@@ -42,11 +48,14 @@ class CoTModel(BaseLLM):
         # High num_return_sequences multiplies memory usage significantly
         # Strategy: Generate sequences in smaller batches (e.g., 3-5 at a time) instead of all at once
         # Optimized for A100: increased chunk sizes and batch processing
-        if num_return_sequences is not None and num_return_sequences > 3:
+        # CRITICAL: Only do chunking if _skip_chunking is False to prevent infinite recursion
+        if not _skip_chunking and num_return_sequences is not None and num_return_sequences > 3:
             # For high num_return_sequences, generate sequences in chunks to reduce memory usage
             # This is more memory-efficient than processing all sequences at once
-            # A100 can handle larger chunks: 15 sequences at a time (was 3)
-            chunk_size = min(15, num_return_sequences) if torch.cuda.is_available() else min(3, num_return_sequences)
+            # Use smaller chunk size (3) to prevent recursion issues
+            # When we recursively call batched_generate with chunk_size, we want it to go
+            # directly to the base generation logic without triggering chunking again
+            chunk_size = 3  # Safe size that won't trigger chunking in recursive calls
             
             # Process prompts in batches when num_return_sequences is high (>= 10)
             # A100 can handle multiple prompts with many sequences
@@ -68,11 +77,12 @@ class CoTModel(BaseLLM):
                             chunk_end = min(chunk_start + chunk_size, num_return_sequences)
                             chunk_num_sequences = chunk_end - chunk_start
                             
-                            # Generate this chunk of sequences (recursive call with smaller num_return_sequences)
+                            # Generate this chunk of sequences with _skip_chunking=True to prevent infinite recursion
                             chunk_results = self.batched_generate(
                                 [prompt], 
                                 num_return_sequences=chunk_num_sequences, 
-                                temperature=temperature
+                                temperature=temperature,
+                                _skip_chunking=True  # CRITICAL: Prevent recursive chunking
                             )
                             prompt_results.extend(chunk_results[0])
                         
@@ -92,7 +102,8 @@ class CoTModel(BaseLLM):
                     results = []
                     for idx in range(0, len(prompts), max_batch_size):
                         batch_prompts = prompts[idx : idx + max_batch_size]
-                        batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
+                        # Use _skip_chunking=True in recursive calls to prevent infinite recursion
+                        batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature, _skip_chunking=True)
                         results.extend(batch_results)
                         # Only clear cache periodically (every 2-3 batches) to reduce overhead
                         if torch.cuda.is_available() and idx % (max_batch_size * 2) == 0:

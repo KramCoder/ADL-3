@@ -46,17 +46,20 @@ class CoTModel(BaseLLM):
             # This is more memory-efficient than processing all sequences at once
             chunk_size = min(3, num_return_sequences)  # Generate 3 sequences at a time max
             
-            # Process prompts one at a time when num_return_sequences is very high
-            if num_return_sequences > 15:
+            # Process prompts one at a time when num_return_sequences is high (>= 10)
+            # This prevents OOM when generating many sequences
+            if num_return_sequences >= 10:
                 all_results = []
-                for prompt in prompts:
+                for prompt_idx, prompt in enumerate(prompts):
                     prompt_results = []
+                    num_chunks = (num_return_sequences + chunk_size - 1) // chunk_size
                     # Generate sequences in chunks
-                    for chunk_start in range(0, num_return_sequences, chunk_size):
+                    for chunk_idx, chunk_start in enumerate(range(0, num_return_sequences, chunk_size)):
                         chunk_end = min(chunk_start + chunk_size, num_return_sequences)
                         chunk_num_sequences = chunk_end - chunk_start
                         
-                        # Generate this chunk of sequences
+                        # Generate this chunk of sequences (recursive call with smaller num_return_sequences)
+                        # This will go through the normal path since chunk_num_sequences <= 3
                         chunk_results = self.batched_generate(
                             [prompt], 
                             num_return_sequences=chunk_num_sequences, 

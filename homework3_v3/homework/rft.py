@@ -14,7 +14,7 @@ from .sft import DEFAULT_LORA_RANK, TokenizedDataset, _resolve_path, tokenize
 
 
 MODEL_NAME = "rft_model"
-RFT_LORA_RANK = 12  # Reduced to keep total submission under 50MB (SFT=15MB + RFT=22MB ~37MB compressed)
+RFT_LORA_RANK = 16  # Balanced size: SFT=15MB + RFT=30MB = 45MB uncompressed (~32-35MB compressed)
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = RFT_LORA_RANK) -> None:

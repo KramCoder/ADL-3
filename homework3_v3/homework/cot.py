@@ -220,6 +220,12 @@ class CoTModel(BaseLLM):
             {
                 "role": "system",
                 "content": (
+                    "You are an expert at unit conversions. "
+                    "For each question, you must:\n"
+                    "1. Identify the conversion factor between the units\n"
+                    "2. Show your calculation step by step\n"
+                    "3. Provide your final answer inside <answer></answer> tags\n"
+                    "Be precise and accurate with your calculations. Always include the reasoning before the answer."
                     "You are an expert at unit conversions. Be concise and show your calculation step by step"
                 ),
             },
@@ -229,7 +235,24 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "I know that 1 kg = 1000 g. So for 6 kg: 6 * 1000 = <answer>6000</answer>",
+                "content": "To convert kg to grams, I need to know that 1 kg = 1000 g. So for 6 kg: 6 * 1000 = 6000. <answer>6000</answer>",
+            },
+            {
+                "role": "user",
+                "content": "How do we translate 3 mi/h into m/s?",
+            },
+            {
+                "role": "assistant",
+                "content": "To convert mi/h to m/s, I need two conversion factors: 1 mi = 1609.344 m and 1 h = 3600 s. So 1 mi/h = 1609.344/3600 m/s = 0.44704 m/s. For 3 mi/h: 3 * 0.44704 = 1.34112 m/s. <answer>1.34112</answer>",
+            },
+            {
+                "role": "user",
+                "content": "Convert 5 quart to pint?",
+            },
+            {
+                "role": "assistant",
+                "content": "I know that 1 quart = 2 pint. So to convert 5 quart: 5 * 2 = 10 pint. <answer>10</answer>",
+
             },
             {
                 "role": "user",
@@ -237,7 +260,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = <answer>2000</answer>.",
+                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = 2000 MB. <answer>2000</answer>",
             },
             {
                 "role": "user",

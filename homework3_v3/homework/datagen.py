@@ -82,12 +82,34 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     # Process questions in batches
     for batch_idx in tqdm(range(0, len(dataset.data), batch_size), desc="Generating RFT dataset"):
         batch_data = dataset.data[batch_idx:batch_idx + batch_size]
+        
+        # Skip empty batches (shouldn't happen, but defensive)
+        if not batch_data:
+            continue
+        
         batch_questions = []
         batch_correct_answers = []
+        batch_data_mapping = []  # Track which batch_data items correspond to which batch_questions
         
-        for question, correct_answer, *_ in batch_data:
-            batch_questions.append(model.format_prompt(question))
-            batch_correct_answers.append(correct_answer)
+        # Build batch questions and answers with error handling
+        for item in batch_data:
+            try:
+                # Handle different data formats - expect at least [question, answer, ...]
+                if len(item) < 2:
+                    print(f"WARNING: Skipping malformed data entry at index {batch_idx}: {item}")
+                    continue
+                question, correct_answer = item[0], item[1]
+                batch_questions.append(model.format_prompt(question))
+                batch_correct_answers.append(correct_answer)
+                batch_data_mapping.append(item)  # Track the mapping
+            except (IndexError, TypeError, ValueError) as e:
+                print(f"WARNING: Error processing data entry at index {batch_idx}: {e}")
+                continue
+        
+        # Skip if no valid questions in batch
+        if not batch_questions:
+            rejected_count += len(batch_data)
+            continue
         
         # Generate multiple sequences for all questions in the batch at once
         # The batched_generate method will handle memory optimization internally
@@ -105,14 +127,49 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             rejected_count += len(batch_data)
             continue
         
+        # Validate that all_generations has the expected structure
+        if not isinstance(all_generations, list):
+            print(f"\nERROR: batched_generate returned unexpected type at batch {batch_idx}: {type(all_generations)}")
+            rejected_count += len(batch_data)
+            continue
+        
+        if len(all_generations) != len(batch_questions):
+            print(f"\nERROR: Mismatch between batch size ({len(batch_questions)}) and generations ({len(all_generations)}) at batch {batch_idx}")
+            rejected_count += len(batch_data)
+            continue
+        
         # Process each question's generations
-        for question_idx, (question, correct_answer, *_) in enumerate(batch_data):
-            generations_list = all_generations[question_idx]
+        # Note: We iterate over batch_questions indices, which correspond to batch_data_mapping
+        for question_idx in range(len(batch_questions)):
+            try:
+                generations_list = all_generations[question_idx]
+            except (IndexError, TypeError) as e:
+                print(f"WARNING: Error accessing generations for question {question_idx} in batch {batch_idx}: {e}")
+                rejected_count += 1
+                continue
+            
+            # Validate that generations_list is iterable
+            if not isinstance(generations_list, (list, tuple)):
+                print(f"WARNING: Unexpected generation type for question {question_idx} in batch {batch_idx}: {type(generations_list)}")
+                rejected_count += 1
+                continue
+            
+            # Get the original question and answer from batch_data_mapping
+            if question_idx >= len(batch_data_mapping):
+                print(f"WARNING: Question index {question_idx} exceeds batch_data_mapping length")
+                rejected_count += 1
+                continue
+            
+            question, correct_answer = batch_data_mapping[question_idx][0], batch_data_mapping[question_idx][1]
             
             # Find the first generation with a correct answer
             found_correct = False
             
             for reasoning in generations_list:
+                # Validate reasoning is a string
+                if not isinstance(reasoning, str):
+                    continue
+                
                 # Verify reasoning contains answer tags
                 if "<answer>" not in reasoning or "</answer>" not in reasoning:
                     continue
@@ -146,7 +203,10 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
 
     print(f"\nGenerated {len(records)} QA pairs out of {len(dataset)} questions")
     print(f"Rejected {rejected_count} questions (no valid answer found)")
-    print(f"Success rate: {len(records)/len(dataset)*100:.1f}%")
+    if len(dataset) > 0:
+        print(f"Success rate: {len(records)/len(dataset)*100:.1f}%")
+    else:
+        print("Success rate: N/A (no questions in dataset)")
 
     return str(output_path)
 

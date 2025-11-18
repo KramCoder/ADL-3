@@ -167,6 +167,16 @@ class BaseLLM:
             # If empty, provide a minimal valid output to prevent division by zero
             decoded_stripped = " 0"
         
+        # Additional safety check: Ensure the generation will produce tokens when tokenized
+        # This prevents division by zero in the grader's compute_loss function
+        # The grader slices [..., 1:] which removes the first token, so we need at least 2 tokens
+        # to ensure the attention mask sum is never 0 after slicing
+        test_tokens = self.tokenizer(decoded_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
+        if test_tokens["input_ids"].shape[1] < 2:
+            # If the generation produces fewer than 2 tokens, append more content
+            # This ensures the grader's compute_loss won't divide by zero
+            decoded_stripped = decoded_stripped + " 0"
+        
         # The model should generate reasoning + <answer>value</answer> format
         # Don't prepend <answer> - the model already generates it as part of the reasoning
         return decoded_stripped
@@ -292,6 +302,17 @@ class BaseLLM:
                 # If empty, provide a minimal valid output to prevent division by zero
                 # Use " 0" to ensure tokenization produces at least one token
                 gen_stripped = " 0"
+            
+            # Additional safety check: Ensure the generation will produce enough tokens when tokenized
+            # This prevents division by zero in the grader's compute_loss function
+            # The grader slices [..., 1:] which removes the first token, so we need at least 2 tokens
+            # to ensure the attention mask sum is never 0 after slicing
+            test_tokens = self.tokenizer(gen_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
+            if test_tokens["input_ids"].shape[1] < 2:
+                # If the generation produces fewer than 2 tokens, append more content
+                # This ensures the grader's compute_loss won't divide by zero
+                gen_stripped = gen_stripped + " 0"
+            
             validated_generations.append(gen_stripped)
         
         # The model should generate reasoning + <answer>value</answer> format

@@ -45,8 +45,9 @@ class CoTModel(BaseLLM):
         if num_return_sequences is not None and num_return_sequences > 3:
             # For high num_return_sequences, generate sequences in chunks to reduce memory usage
             # This is more memory-efficient than processing all sequences at once
-            # A100 can handle larger chunks: 15 sequences at a time (was 3)
-            chunk_size = min(15, num_return_sequences) if torch.cuda.is_available() else min(3, num_return_sequences)
+            # A100 can handle larger chunks but must be <= 3 to avoid infinite recursion
+            # The chunk size MUST be <= 3 so that the recursive call skips the chunking logic
+            chunk_size = 3
             
             # Process prompts in batches when num_return_sequences is high (>= 10)
             # A100 can handle multiple prompts with many sequences

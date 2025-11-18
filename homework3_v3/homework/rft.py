@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import Trainer, TrainingArguments
+from transformers import Trainer, TrainingArguments, default_data_collator
 
 from .base_llm import BaseLLM
 from .conversion_utils import apply_dataset_answer_patch
@@ -87,8 +87,10 @@ def train_model(
     
     model_path = _resolve_path(output_dir)
     
-    # Load base model and create LoRA adapter
-    llm = BaseLLM()
+    # Load base model in FP32 for training stability
+    # Mixed precision will be handled by TrainingArguments
+    llm = BaseLLM(use_fp32_for_training=True)
+    
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
@@ -106,6 +108,22 @@ def train_model(
     
     # Enable input require grads for gradient checkpointing
     lora_model.enable_input_require_grads()
+    
+    # Try to compile model for additional speedup (PyTorch 2.0+)
+    # This can provide 10-30% speedup on modern GPUs
+    # Note: torch.compile may not work with all PeftModel configurations
+    # If it fails, training will continue without compilation
+    try:
+        if hasattr(torch, 'compile') and torch.cuda.is_available():
+            # Check PyTorch version (compile requires 2.0+)
+            if torch.__version__ >= "2.0":
+                print("Compiling model with torch.compile for faster training...")
+                # Use 'default' mode for better compatibility with PeftModel
+                lora_model = torch.compile(lora_model, mode="default")
+                print("Model compilation successful!")
+    except Exception as e:
+        print(f"Model compilation not available or failed: {e}")
+        print("Continuing without compilation (this is normal for some configurations)...")
     
     # Load RFT dataset (format: [question, answer, reasoning])
     rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
@@ -154,28 +172,68 @@ def train_model(
     rft_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
     
-    # Training arguments
+    # Determine precision settings - prefer bf16 for stability and speed
+    use_bf16 = False
+    use_fp16 = False
+    if torch.cuda.is_available():
+        # Check if bf16 is supported (Ampere+ GPUs: A100, RTX 30xx, etc.)
+        if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+            use_bf16 = True
+            print("Using bfloat16 for training (2x speedup, more stable than fp16)")
+        else:
+            # Fallback to fp16 if bf16 not available
+            use_fp16 = True
+            print("Using float16 for training (2x speedup, bf16 not available)")
+    else:
+        print("Using FP32 for training (CPU/MPS - no mixed precision)")
+    
+    # Optimized training arguments for speed
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
         report_to="tensorboard",
-        gradient_checkpointing=True,
+        # Mixed precision training (2x speedup)
+        bf16=use_bf16,
+        fp16=use_fp16,
+        # Gradient settings
+        gradient_checkpointing=True,  # Trade compute for memory
+        gradient_accumulation_steps=2,  # Effective batch size = 32 * 2 = 64
+        max_grad_norm=1.0,  # Gradient clipping for stability
+        # Batch size - reduced per device to allow gradient accumulation
+        per_device_train_batch_size=16,  # Effective batch size: 16 * 2 = 32
+        # Learning rate and optimization
         learning_rate=2e-4,
+        lr_scheduler_type="cosine",  # Better convergence than linear
+        warmup_ratio=0.1,  # 10% warmup steps
+        weight_decay=0.01,  # L2 regularization
+        # Training duration
         num_train_epochs=3,
-        per_device_train_batch_size=32,
-        save_strategy="epoch",
+        # DataLoader optimizations
+        dataloader_num_workers=4,  # Parallel data loading (adjust based on CPU cores)
+        dataloader_pin_memory=True,  # Faster GPU transfer
+        # Logging and saving
         logging_steps=10,
+        save_strategy="epoch",
         save_total_limit=1,
+        # Other optimizations
+        remove_unused_columns=False,  # Keep our custom labels
+        ddp_find_unused_parameters=False,  # Faster distributed training if used
+        label_names=["labels"],  # Explicitly specify label field
     )
     
-    # Create trainer
+    # Create trainer with optimized data collator
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        data_collator=default_data_collator,  # Efficient batching
     )
     
     # Train
+    print("Starting optimized RFT training...")
+    print(f"Mixed precision: {'bf16' if use_bf16 else 'fp16' if use_fp16 else 'fp32'}")
+    print(f"Effective batch size: {training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps}")
+    print(f"DataLoader workers: {training_args.dataloader_num_workers}")
     trainer.train()
     
     # Save the final model

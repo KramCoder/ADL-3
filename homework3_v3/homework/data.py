@@ -27,7 +27,20 @@ def is_answer_valid(answer: float, correct_answer: float, relative_tolerance: fl
     # Check if correct_answer is NaN or Inf (shouldn't happen, but be defensive)
     if correct_answer != correct_answer or abs(correct_answer) == float('inf'):
         return False
-    return abs(round(answer, 3) - round(correct_answer, 3)) < relative_tolerance * abs(round(correct_answer, 3))
+    
+    # Round both values for comparison
+    rounded_answer = round(answer, 3)
+    rounded_correct = round(correct_answer, 3)
+    diff = abs(rounded_answer - rounded_correct)
+    
+    # For zero or very small correct answers, use absolute tolerance instead of relative
+    # This prevents division by zero and allows reasonable tolerance for zero values
+    if abs(rounded_correct) < 1e-6:  # Essentially zero
+        # Use absolute tolerance of 0.001 (1e-3) for zero values
+        return diff < 0.001
+    else:
+        # Use relative tolerance for non-zero values
+        return diff < relative_tolerance * abs(rounded_correct)
 
 
 @dataclass

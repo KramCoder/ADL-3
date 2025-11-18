@@ -41,10 +41,21 @@ class BaseLLM:
             # Default: Use FP32 for inference stability (prevents NaN/Inf in grader)
             # FP16 can cause numerical instability in cross-entropy loss computation
             # Large logits in FP16 can overflow to Inf, causing NaN in loss
+            # BF16 is better than FP16 (more stable, faster on A100)
             # Set environment variable USE_FP16_INFERENCE=1 to enable FP16 for speed (not recommended for grading)
+            # Set environment variable USE_BF16_INFERENCE=1 to enable BF16 for speed on A100 (recommended)
             import os
+            use_bf16 = os.environ.get("USE_BF16_INFERENCE", "0").lower() in ("1", "true", "yes")
             use_fp16 = os.environ.get("USE_FP16_INFERENCE", "0").lower() in ("1", "true", "yes")
-            if use_fp16 and device == "cuda":
+            
+            if use_bf16 and device == "cuda":
+                # Check if BF16 is supported (Ampere+ GPUs like A100)
+                if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+                    load_kwargs = {"torch_dtype": torch.bfloat16}
+                else:
+                    # Fallback to FP32 if BF16 not supported
+                    load_kwargs = {"torch_dtype": torch.float32}
+            elif use_fp16 and device == "cuda":
                 load_kwargs = {"torch_dtype": torch.float16}
             else:
                 # Default to FP32 for numerical stability
@@ -243,8 +254,16 @@ class BaseLLM:
         """
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
-        # If you run out of memory, try to reduce the micro_batch_size.
-        micro_batch_size = 32
+        # A100 can handle much larger batches
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                micro_batch_size = 128  # A100: Much larger batches
+            else:
+                micro_batch_size = 32  # Other GPUs: Conservative batch size
+        else:
+            micro_batch_size = 32
+        
         if len(prompts) > micro_batch_size:
             return [
                 r

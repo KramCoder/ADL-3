@@ -19,8 +19,34 @@ from .conversion_utils import apply_dataset_answer_patch
 
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
+        # Optimize for A100: use BF16 for faster inference if available
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                # A100 supports BF16 natively - faster and more stable than FP16
+                if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+                    # Use BF16 for faster inference on A100
+                    kwargs.setdefault('use_fp32_for_inference', False)
+                    # Set environment variable to use BF16
+                    import os
+                    os.environ['USE_BF16_INFERENCE'] = '1'
+        
         super().__init__(*args, **kwargs)
         # Removed apply_dataset_answer_patch to actually test the LLM
+        
+        # Optimize model with torch.compile on A100 for faster inference (PyTorch 2.0+)
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                try:
+                    # torch.compile can provide 20-30% speedup on A100
+                    if hasattr(torch, 'compile') and callable(getattr(torch, 'compile')):
+                        self.model = torch.compile(self.model, mode="reduce-overhead")
+                        print("Model compiled with torch.compile for A100 optimization")
+                except Exception as e:
+                    # If compilation fails, continue without it
+                    print(f"torch.compile not available or failed: {e}. Continuing without compilation.")
 
     def batched_generate(
         self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0
@@ -38,64 +64,116 @@ class CoTModel(BaseLLM):
         # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
+        # Optimize for A100 GPU - can handle much larger batches
+        # Detect A100 and adjust chunk sizes accordingly
+        is_a100 = False
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                is_a100 = True
+        
         # When generating multiple sequences per prompt, process in smaller chunks to prevent OOM
         # High num_return_sequences multiplies memory usage significantly
         # Strategy: Generate sequences in smaller batches (e.g., 3-5 at a time) instead of all at once
         if num_return_sequences is not None and num_return_sequences > 3:
             # For high num_return_sequences, generate sequences in chunks to reduce memory usage
-            # This is more memory-efficient than processing all sequences at once
-            chunk_size = min(3, num_return_sequences)  # Generate 3 sequences at a time max
-            
-            # Process prompts one at a time when num_return_sequences is high (>= 10)
-            # This prevents OOM when generating many sequences
-            if num_return_sequences >= 10:
-                all_results = []
-                for prompt_idx, prompt in enumerate(prompts):
-                    prompt_results = []
-                    num_chunks = (num_return_sequences + chunk_size - 1) // chunk_size
-                    # Generate sequences in chunks
-                    for chunk_idx, chunk_start in enumerate(range(0, num_return_sequences, chunk_size)):
-                        chunk_end = min(chunk_start + chunk_size, num_return_sequences)
-                        chunk_num_sequences = chunk_end - chunk_start
-                        
-                        # Generate this chunk of sequences (recursive call with smaller num_return_sequences)
-                        # This will go through the normal path since chunk_num_sequences <= 3
-                        chunk_results = self.batched_generate(
-                            [prompt], 
-                            num_return_sequences=chunk_num_sequences, 
-                            temperature=temperature
-                        )
-                        prompt_results.extend(chunk_results[0])
-                        
-                        # Aggressive memory cleanup after each chunk
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                            torch.cuda.synchronize()
-                    
-                    all_results.append(prompt_results)
-                    # Clear cache after each prompt
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                
-                return all_results
+            # A100 can handle larger chunks
+            if is_a100:
+                chunk_size = min(8, num_return_sequences)  # A100: Generate 8 sequences at a time
+                max_prompt_batch = 16  # A100: Process up to 16 prompts at once
             else:
-                # For moderate num_return_sequences (4-10), process prompts one at a time
-                # but generate all sequences for each prompt at once
-                max_batch_size = max(1, 4 // num_return_sequences)  # Adaptive batch size
-                if len(prompts) > max_batch_size:
+                chunk_size = min(3, num_return_sequences)  # Other GPUs: 3 sequences at a time
+                max_prompt_batch = 4
+            
+            # Process prompts in batches when num_return_sequences is high (>= 10)
+            # A100 can handle larger batches
+            if num_return_sequences >= 10:
+                # For A100, process multiple prompts at once even with high num_return_sequences
+                if is_a100 and len(prompts) > 1:
+                    # Process prompts in batches
+                    all_results = []
+                    for prompt_batch_idx in range(0, len(prompts), max_prompt_batch):
+                        prompt_batch = prompts[prompt_batch_idx:prompt_batch_idx + max_prompt_batch]
+                        batch_results = []
+                        
+                        for prompt in prompt_batch:
+                            prompt_results = []
+                            # Generate sequences in chunks
+                            for chunk_start in range(0, num_return_sequences, chunk_size):
+                                chunk_end = min(chunk_start + chunk_size, num_return_sequences)
+                                chunk_num_sequences = chunk_end - chunk_start
+                                
+                                # Generate this chunk of sequences
+                                chunk_results = self.batched_generate(
+                                    [prompt], 
+                                    num_return_sequences=chunk_num_sequences, 
+                                    temperature=temperature
+                                )
+                                prompt_results.extend(chunk_results[0])
+                            
+                            batch_results.append(prompt_results)
+                        
+                        all_results.extend(batch_results)
+                        # Less aggressive cache clearing on A100
+                        if torch.cuda.is_available() and not is_a100:
+                            torch.cuda.empty_cache()
+                    
+                    return all_results
+                else:
+                    # Fallback: process one at a time (for non-A100 or single prompt)
+                    all_results = []
+                    for prompt_idx, prompt in enumerate(prompts):
+                        prompt_results = []
+                        # Generate sequences in chunks
+                        for chunk_start in range(0, num_return_sequences, chunk_size):
+                            chunk_end = min(chunk_start + chunk_size, num_return_sequences)
+                            chunk_num_sequences = chunk_end - chunk_start
+                            
+                            # Generate this chunk of sequences
+                            chunk_results = self.batched_generate(
+                                [prompt], 
+                                num_return_sequences=chunk_num_sequences, 
+                                temperature=temperature
+                            )
+                            prompt_results.extend(chunk_results[0])
+                            
+                            # Less aggressive memory cleanup on A100
+                            if torch.cuda.is_available() and not is_a100:
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+                        
+                        all_results.append(prompt_results)
+                        # Clear cache after each prompt (less frequent on A100)
+                        if torch.cuda.is_available() and not is_a100:
+                            torch.cuda.empty_cache()
+                    
+                    return all_results
+            else:
+                # For moderate num_return_sequences (4-10), process prompts in batches
+                # A100 can handle larger batches
+                if len(prompts) > max_prompt_batch:
                     results = []
-                    for idx in range(0, len(prompts), max_batch_size):
-                        batch_prompts = prompts[idx : idx + max_batch_size]
+                    for idx in range(0, len(prompts), max_prompt_batch):
+                        batch_prompts = prompts[idx : idx + max_prompt_batch]
                         batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature)
                         results.extend(batch_results)
-                        # Clear cache after each batch to prevent OOM
-                        if torch.cuda.is_available():
+                        # Less frequent cache clearing on A100
+                        if torch.cuda.is_available() and not is_a100:
                             torch.cuda.empty_cache()
                             torch.cuda.synchronize()
                     return results
         
         # Preventing OOM for regular batching
-        micro_batch_size = 32
+        # A100 can handle much larger batches
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                micro_batch_size = 128  # A100: Much larger batches
+            else:
+                micro_batch_size = 32  # Other GPUs: Conservative batch size
+        else:
+            micro_batch_size = 32
+        
         if len(prompts) > micro_batch_size:
             return [
                 r
@@ -120,13 +198,24 @@ class CoTModel(BaseLLM):
             pad_token_id = self.tokenizer.eos_token_id
 
         # Adjust memory usage based on num_return_sequences
-        # When generating many sequences, reduce max_new_tokens and disable cache to save memory
+        # A100 has more memory, so we can be more aggressive
+        is_a100 = False
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            if "A100" in gpu_name:
+                is_a100 = True
+        
         max_tokens = 120
         use_cache = True
         if num_return_sequences is not None and num_return_sequences > 5:
-            # Reduce max tokens and disable cache when memory is tight
-            max_tokens = 100
-            use_cache = False  # Disable KV cache to save memory
+            if is_a100:
+                # A100: Keep cache enabled and full token count for speed
+                max_tokens = 120
+                use_cache = True
+            else:
+                # Other GPUs: Reduce max tokens and disable cache when memory is tight
+                max_tokens = 100
+                use_cache = False  # Disable KV cache to save memory
         
         generation_kwargs = {
             "max_new_tokens": max_tokens,
@@ -167,10 +256,15 @@ class CoTModel(BaseLLM):
         # Delete intermediate tensors to free memory immediately
         del outputs, generated_tokens, inputs
         
-        # Clear CUDA cache after generation to free memory, especially important for high num_return_sequences
+        # Clear CUDA cache after generation (less frequent on A100 for speed)
+        # A100 has more memory, so we can skip frequent cache clearing
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()  # Ensure all operations complete before continuing
+            is_a100 = "A100" in torch.cuda.get_device_name(0)
+            if not is_a100:
+                # Other GPUs: Clear cache frequently
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Ensure all operations complete before continuing
+            # A100: Skip cache clearing for better performance (will clear periodically)
         
         # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content

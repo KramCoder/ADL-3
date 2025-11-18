@@ -333,17 +333,15 @@ def train_model(
     if non_masked_labels == 0:
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
-    # Determine precision settings - prefer bf16 over fp16 for stability
+    # Determine precision settings - prefer bf16 for stability, avoid fp16
     use_bf16 = False
-    use_fp16 = False
     if torch.cuda.is_available():
         # Check if bf16 is supported (Ampere+ GPUs)
         if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
             use_bf16 = True
             print("Using bfloat16 for training (more stable than fp16)")
         else:
-            use_fp16 = True
-            print("Using float16 for training (with loss scaling)")
+            print("Using FP32 for training (bf16 not available, fp16 disabled for stability)")
     
     # Training arguments with improved stability and better accuracy
     training_args_dict = {
@@ -359,8 +357,8 @@ def train_model(
         "save_strategy": "no",  # Don't save intermediate checkpoints
         "remove_unused_columns": False,  # Keep our custom labels
         "bf16": use_bf16,  # Use bf16 if available (more stable)
-        "fp16": use_fp16,  # Fallback to fp16 if bf16 not available
-        "fp16_full_eval": False,  # Use full precision for evaluation
+        # fp16 removed - causes numerical instability and NaN issues
+        # Use FP32 if bf16 is not available (stable, no overflow)
         "dataloader_pin_memory": False,  # Can help with memory issues
         "max_grad_norm": 1.0,  # Clip gradients to prevent explosion
         "label_names": ["labels"],  # Explicitly specify label field for PeftModel

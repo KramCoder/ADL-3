@@ -73,56 +73,97 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
 
     print(f"\nGenerating RFT dataset with {oversample} sequences per question...")
     print(f"Processing {len(dataset)} questions...")
+    
+    # Detect A100 GPU and optimize batch size accordingly
+    is_a100 = False
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0).lower()
+        is_a100 = "a100" in gpu_name
+        if is_a100:
+            print(f"Detected A100 GPU: {torch.cuda.get_device_name(0)}")
+            print("Using optimized batch processing for A100 (80GB memory)")
+        else:
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+    
+    # Batch size: Process multiple questions at once for A100
+    # A100 can handle much larger batches than smaller GPUs
+    if is_a100:
+        question_batch_size = 8  # Process 8 questions at a time on A100
+    else:
+        question_batch_size = 1  # Conservative for other GPUs
+    
     sys.stdout.flush()
 
-    # Process questions one at a time to ensure proper handling
-    for idx, (question, correct_answer, *_) in enumerate(tqdm(dataset.data, desc="Generating RFT dataset")):
-        # Generate multiple sequences (10-20) per question
-        # The batched_generate method will handle memory optimization internally
+    # Process questions in batches for A100, one at a time for other GPUs
+    dataset_list = list(dataset.data)
+    for batch_start in tqdm(range(0, len(dataset_list), question_batch_size), desc="Generating RFT dataset"):
+        batch_end = min(batch_start + question_batch_size, len(dataset_list))
+        batch_questions = []
+        batch_answers = []
+        batch_indices = []
+        
+        # Prepare batch
+        for idx in range(batch_start, batch_end):
+            question, correct_answer, *_ = dataset_list[idx]
+            batch_questions.append(model.format_prompt(question))
+            batch_answers.append(correct_answer)
+            batch_indices.append(idx)
+        
+        # Generate multiple sequences for all questions in batch
         try:
-            generations = model.batched_generate(
-                [model.format_prompt(question)],
+            # batched_generate returns list[list[str]] when num_return_sequences is set
+            generations_batch = model.batched_generate(
+                batch_questions,
                 num_return_sequences=oversample,
                 temperature=temperature
             )
         except Exception as e:
-            print(f"\nERROR generating sequences for question {idx}: {e}")
-            print(f"Question: {question[:100]}...")
-            rejected_count += 1
+            print(f"\nERROR generating sequences for batch starting at {batch_start}: {e}")
+            rejected_count += len(batch_questions)
             continue
         
-        # generations is a list of lists, so get the first (and only) item
-        generations_list = generations[0]
-        
-        # Find the first generation with a correct answer
-        found_correct = False
-        
-        for reasoning in generations_list:
-            # Verify reasoning contains answer tags
-            if "<answer>" not in reasoning or "</answer>" not in reasoning:
-                continue
+        # Process each question's generations
+        for batch_idx in range(len(batch_questions)):
+            # Extract original question from dataset
+            idx = batch_indices[batch_idx]
+            original_question = dataset_list[idx][0]
+            correct_answer = batch_answers[batch_idx]
+            generations_list = generations_batch[batch_idx]
             
-            parsed_answer = model.parse_answer(reasoning)
-            # Check for NaN
-            if parsed_answer != parsed_answer:
-                continue
+            # Find the first generation with a correct answer
+            found_correct = False
             
-            # Check if answer is valid
-            if is_answer_valid(parsed_answer, correct_answer):
-                records.append([question, correct_answer, reasoning])
-                found_correct = True
-                break
+            for reasoning in generations_list:
+                # Verify reasoning contains answer tags
+                if "<answer>" not in reasoning or "</answer>" not in reasoning:
+                    continue
+                
+                parsed_answer = model.parse_answer(reasoning)
+                # Check for NaN
+                if parsed_answer != parsed_answer:
+                    continue
+                
+                # Check if answer is valid
+                if is_answer_valid(parsed_answer, correct_answer):
+                    records.append([original_question, correct_answer, reasoning])
+                    found_correct = True
+                    break
+            
+            # If no correct answer found, ignore this data point (as per instructions)
+            if not found_correct:
+                rejected_count += 1
         
-        # If no correct answer found, ignore this data point (as per instructions)
-        if not found_correct:
-            rejected_count += 1
-        
-        # Clear CUDA cache after each question to prevent OOM
-        # Also delete the generations list to free Python memory
-        del generations, generations_list
-        if torch.cuda.is_available():
+        # Clear CUDA cache after each batch (less frequent on A100)
+        del generations_batch
+        if torch.cuda.is_available() and not is_a100:
+            # Only clear cache frequently on non-A100 GPUs
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()  # Ensure cleanup completes
+            torch.cuda.synchronize()
+    
+    # Final cleanup
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)

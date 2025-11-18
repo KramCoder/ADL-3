@@ -84,11 +84,15 @@ def train_model(
     **_: Any,
 ):
     import json
+    from transformers import default_data_collator
     
     model_path = _resolve_path(output_dir)
+    model_path.mkdir(parents=True, exist_ok=True)
     
-    # Load base model and create LoRA adapter
-    llm = BaseLLM()
+    # Load base model in FP32 for training stability (avoids NaN gradients)
+    llm = BaseLLM(use_fp32_for_training=True)
+    
+    # Create LoRA config
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
@@ -99,13 +103,18 @@ def train_model(
         inference_mode=False,  # CRITICAL: Must be False for training
     )
     
+    # Apply LoRA to model
     lora_model = get_peft_model(llm.model, config)
+    
+    # Enable input require grads for gradient checkpointing
+    lora_model.enable_input_require_grads()
     
     # Set model to training mode
     lora_model.train()
     
-    # Enable input require grads for gradient checkpointing
-    lora_model.enable_input_require_grads()
+    # Verify model is trainable
+    trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {trainable_params}")
     
     # Load RFT dataset (format: [question, answer, reasoning])
     rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
@@ -154,34 +163,86 @@ def train_model(
     rft_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, rft_dataset, format_rft_example)
     
-    # Training arguments
+    # Verify tokenization works correctly - check a sample
+    sample = tokenized_dataset[0]
+    non_masked_labels = sum(1 for l in sample["labels"] if l != -100)
+    print(f"Sample non-masked labels: {non_masked_labels} out of {len(sample['labels'])}")
+    if non_masked_labels == 0:
+        raise ValueError("All labels are masked! Tokenization is incorrect.")
+    
+    # Determine precision settings - prefer bf16 for speed, avoid fp16
+    use_bf16 = False
+    if torch.cuda.is_available():
+        # Check if bf16 is supported (Ampere+ GPUs)
+        if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
+            use_bf16 = True
+            print("Using bfloat16 for training (faster than FP32, more stable than FP16)")
+        else:
+            print("Using FP32 for training (bf16 not available, fp16 disabled for stability)")
+    
+    # Optimized training arguments for faster training
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
-        report_to="tensorboard",
-        gradient_checkpointing=True,
-        learning_rate=2e-4,
+        report_to="none",  # Disable TensorBoard to save space and time
+        gradient_checkpointing=True,  # Reduces memory, enables larger batches
+        learning_rate=5e-4,  # Increased from 2e-4 for faster convergence
         num_train_epochs=3,
-        per_device_train_batch_size=32,
+        per_device_train_batch_size=16,  # Reduced from 32 to allow gradient accumulation
+        gradient_accumulation_steps=2,  # Effective batch size = 16 * 2 = 32
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
+        bf16=use_bf16,  # Use bf16 if available (faster than FP32)
+        # fp16 removed - causes numerical instability
+        dataloader_pin_memory=False,  # Can help with memory issues
+        max_grad_norm=1.0,  # Clip gradients to prevent explosion
+        label_names=["labels"],  # Explicitly specify label field for PeftModel
+        # Learning rate scheduler settings
+        lr_scheduler_type="cosine",  # Use cosine decay instead of linear
+        warmup_ratio=0.1,  # Warmup for better stability
+        # Additional optimizations
+        dataloader_num_workers=0,  # Avoid multiprocessing issues
+        ddp_find_unused_parameters=False,  # Faster training
+        weight_decay=0.01,  # Add weight decay for regularization
+        remove_unused_columns=False,  # Keep our custom labels
     )
+    
+    # Use default data collator which handles batching correctly
+    data_collator = default_data_collator
     
     # Create trainer
     trainer = Trainer(
         model=lora_model,
         args=training_args,
         train_dataset=tokenized_dataset,
+        data_collator=data_collator,
     )
     
     # Train
-    trainer.train()
+    print("Starting training...")
+    train_result = trainer.train()
+    
+    # Print training metrics summary
+    print("\n" + "=" * 60)
+    print("Training Summary:")
+    print("=" * 60)
+    if hasattr(train_result, 'metrics'):
+        for key, value in train_result.metrics.items():
+            if isinstance(value, (int, float)):
+                if key == 'train_loss':
+                    print(f"Final Loss: {value:.6f}")
+                elif 'learning_rate' in key:
+                    print(f"Learning Rate: {value:.2e}")
+                else:
+                    print(f"{key}: {value}")
     
     # Save the final model
+    print(f"\nSaving model to {model_path}")
     trainer.save_model()
     
     # Test the model
+    print("Testing model...")
     test_model(str(model_path))
 
 

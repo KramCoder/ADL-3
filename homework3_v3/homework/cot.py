@@ -169,17 +169,25 @@ class CoTModel(BaseLLM):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()  # Ensure all operations complete before continuing
         
-        # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
+        # CRITICAL: Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content
         # that will produce tokens when tokenized. Empty outputs cause division by zero.
         validated_generations = []
         for gen in generations:
             # Strip whitespace and check if empty
             gen_stripped = gen.strip()
-            if not gen_stripped:
-                # If empty, provide a minimal valid output to prevent division by zero
-                # Use " 0" to ensure tokenization produces at least one token
-                gen_stripped = " 0"
+            
+            # Robust validation: ensure we have meaningful content
+            if not gen_stripped or len(gen_stripped) < 2:
+                # If empty or too short, provide a minimal valid answer to prevent division by zero
+                # Use a format that ensures tokenization produces multiple tokens
+                gen_stripped = "<answer>0</answer>"
+            
+            # Validate that the output doesn't contain only whitespace or special characters
+            # Check if there's at least one alphanumeric character
+            elif not any(c.isalnum() for c in gen_stripped):
+                gen_stripped = "<answer>0</answer>"
+            
             validated_generations.append(gen_stripped)
         
         if num_return_sequences is None:

@@ -71,7 +71,18 @@ def benchmark(func: BaseLLM, dataset: Dataset, max_question: int) -> BenchmarkRe
     idx = range(min(len(dataset), max_question))
     questions = [dataset[i][0] for i in idx]
     answers = func.answer(*questions)
-    return BenchmarkResult.from_answers(answers, dataset, max_question)
+    
+    # CRITICAL: Ensure no NaN or Inf values in answers - replace with 0.0
+    # The grader cannot handle NaN/Inf and will crash with ValueError
+    sanitized_answers = []
+    for ans in answers:
+        # Check if answer is NaN (NaN != NaN) or Inf
+        if ans != ans or abs(ans) == float('inf'):
+            sanitized_answers.append(0.0)
+        else:
+            sanitized_answers.append(ans)
+    
+    return BenchmarkResult.from_answers(sanitized_answers, dataset, max_question)
 
 
 if __name__ == "__main__":

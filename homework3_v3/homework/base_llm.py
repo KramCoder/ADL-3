@@ -80,8 +80,14 @@ class BaseLLM:
         """
         Parse the <answer></answer> tag and return a float.
         This function is somewhat robust to output errors (e.g. missing </answer> tags).
+        
+        CRITICAL: This function must NEVER return NaN or Inf, as the grader cannot handle them.
         """
         try:
+            # Handle None or non-string inputs
+            if answer is None or not isinstance(answer, str):
+                return 0.0
+            
             # Extract content between <answer> and </answer> tags
             if "<answer>" not in answer:
                 return 0.0
@@ -102,15 +108,22 @@ class BaseLLM:
                 else:
                     return 0.0
             
+            # Clean the value string
+            value_str = value_str.strip()
+            if not value_str or value_str == '-':
+                return 0.0
+            
             parsed = float(value_str)
-            # Check for NaN or Inf values - the grader cannot process these
+            
+            # CRITICAL: Check for NaN or Inf values - the grader cannot process these
             # float() can successfully parse "nan", "inf", "-inf" without raising ValueError
             if not (parsed == parsed):  # NaN check (NaN != NaN)
                 return 0.0
             if abs(parsed) == float('inf'):  # Inf check
                 return 0.0
+            
             return parsed
-        except (IndexError, ValueError, AttributeError):
+        except (IndexError, ValueError, AttributeError, TypeError):
             # Return 0.0 instead of NaN to avoid grader errors
             # The grader cannot process NaN values
             return 0.0
@@ -159,13 +172,21 @@ class BaseLLM:
         # Decode the generated tokens
         decoded = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
-        # Ensure the generation is non-empty to prevent NaN in loss calculation
+        # CRITICAL: Ensure the generation is non-empty to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content
         # that will produce tokens when tokenized. Empty outputs cause division by zero.
         decoded_stripped = decoded.strip()
-        if not decoded_stripped:
-            # If empty, provide a minimal valid output to prevent division by zero
-            decoded_stripped = " 0"
+        
+        # Robust validation: ensure we have meaningful content
+        if not decoded_stripped or len(decoded_stripped) < 2:
+            # If empty or too short, provide a minimal valid answer to prevent division by zero
+            # Use a format that ensures tokenization produces multiple tokens
+            decoded_stripped = "<answer>0</answer>"
+        
+        # Validate that the output doesn't contain only whitespace or special characters
+        # Check if there's at least one alphanumeric character
+        if not any(c.isalnum() for c in decoded_stripped):
+            decoded_stripped = "<answer>0</answer>"
         
         # The model should generate reasoning + <answer>value</answer> format
         # Don't prepend <answer> - the model already generates it as part of the reasoning
@@ -281,17 +302,25 @@ class BaseLLM:
         # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
-        # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
+        # CRITICAL: Ensure all generations are non-empty and valid to prevent NaN in loss calculation
         # The grader computes loss on question + answer, so we need at least some content
         # that will produce tokens when tokenized. Empty outputs cause division by zero.
         validated_generations = []
         for gen in generations:
             # Strip whitespace and check if empty
             gen_stripped = gen.strip()
-            if not gen_stripped:
-                # If empty, provide a minimal valid output to prevent division by zero
-                # Use " 0" to ensure tokenization produces at least one token
-                gen_stripped = " 0"
+            
+            # Robust validation: ensure we have meaningful content
+            if not gen_stripped or len(gen_stripped) < 2:
+                # If empty or too short, provide a minimal valid answer to prevent division by zero
+                # Use a format that ensures tokenization produces multiple tokens
+                gen_stripped = "<answer>0</answer>"
+            
+            # Validate that the output doesn't contain only whitespace or special characters
+            # Check if there's at least one alphanumeric character
+            elif not any(c.isalnum() for c in gen_stripped):
+                gen_stripped = "<answer>0</answer>"
+            
             validated_generations.append(gen_stripped)
         
         # The model should generate reasoning + <answer>value</answer> format

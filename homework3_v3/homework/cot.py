@@ -229,7 +229,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "I know that 1 kg = 1000 g. So for 6 kg: 6 * 1000 = 6000 grams.",
+                "content": "I know that 1 kg = 1000 g. So for 6 kg: 6 * 1000 = <answer>6000</answer>",
             },
             {
                 "role": "user",
@@ -237,7 +237,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "assistant",
-                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = 2000 MB.",
+                "content": "The conversion factor is 1 G = 1000 MB. So 2 G = 2 * 1000 = <answer>2000</answer>.",
             },
             {
                 "role": "user",

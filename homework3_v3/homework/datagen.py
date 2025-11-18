@@ -37,9 +37,6 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
 
     dataset = Dataset("train")
     
-    # Use 1.7B model specifically for data generation as per README instructions
-    # The README states: "Using the HuggingFaceTB/SmolLM2-1.7B-Instruct model should 
-    # further help you obtain better rollouts."
     print("Loading CoT model (1.7B) for RFT dataset generation...")
     print("This may take a minute on first run (downloading model if needed)...")
     sys.stdout.flush()
@@ -52,7 +49,6 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
         print(f"ERROR: Failed to load model: {e}")
         raise
     
-    # Warm up the model with a dummy generation to ensure it's ready
     print("Warming up model (this may take 10-30 seconds)...")
     sys.stdout.flush()
     try:
@@ -75,47 +71,36 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
     print(f"Processing {len(dataset)} questions...")
     sys.stdout.flush()
 
-    # A100 optimization: Process questions in batches for parallel generation
-    # This is much faster than one-at-a-time processing
     batch_size = 16 if torch.cuda.is_available() else 1
     
-    # Process questions in batches
     for batch_idx in tqdm(range(0, len(dataset.data), batch_size), desc="Generating RFT dataset"):
         batch_data = dataset.data[batch_idx:batch_idx + batch_size]
         
-        # Skip empty batches (shouldn't happen, but defensive)
         if not batch_data:
             continue
         
         batch_questions = []
         batch_correct_answers = []
-        batch_data_mapping = []  # Track which batch_data items correspond to which batch_questions
+        batch_data_mapping = []
         
-        # Build batch questions and answers with error handling
         for item in batch_data:
             try:
-                # Handle different data formats - expect at least [question, answer, ...]
                 if len(item) < 2:
                     print(f"WARNING: Skipping malformed data entry at index {batch_idx}: {item}")
                     continue
                 question, correct_answer = item[0], item[1]
                 batch_questions.append(model.format_prompt(question))
                 batch_correct_answers.append(correct_answer)
-                batch_data_mapping.append(item)  # Track the mapping
+                batch_data_mapping.append(item)
             except (IndexError, TypeError, ValueError) as e:
                 print(f"WARNING: Error processing data entry at index {batch_idx}: {e}")
                 continue
         
-        # Skip if no valid questions in batch
         if not batch_questions:
             rejected_count += len(batch_data)
             continue
         
-        # Generate multiple sequences for all questions in the batch at once
-        # The batched_generate method will handle memory optimization internally
         try:
-            # Generate all sequences for all questions in batch
-            # This returns a list of lists: [question1_generations, question2_generations, ...]
             all_generations = model.batched_generate(
                 batch_questions,
                 num_return_sequences=oversample,
@@ -123,11 +108,9 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             )
         except Exception as e:
             print(f"\nERROR generating sequences for batch starting at index {batch_idx}: {e}")
-            # Reject all questions in this batch
             rejected_count += len(batch_data)
             continue
         
-        # Validate that all_generations has the expected structure
         if not isinstance(all_generations, list):
             print(f"\nERROR: batched_generate returned unexpected type at batch {batch_idx}: {type(all_generations)}")
             rejected_count += len(batch_data)
@@ -138,8 +121,6 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             rejected_count += len(batch_data)
             continue
         
-        # Process each question's generations
-        # Note: We iterate over batch_questions indices, which correspond to batch_data_mapping
         for question_idx in range(len(batch_questions)):
             try:
                 generations_list = all_generations[question_idx]
@@ -148,13 +129,11 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
                 rejected_count += 1
                 continue
             
-            # Validate that generations_list is iterable
             if not isinstance(generations_list, (list, tuple)):
                 print(f"WARNING: Unexpected generation type for question {question_idx} in batch {batch_idx}: {type(generations_list)}")
                 rejected_count += 1
                 continue
             
-            # Get the original question and answer from batch_data_mapping
             if question_idx >= len(batch_data_mapping):
                 print(f"WARNING: Question index {question_idx} exceeds batch_data_mapping length")
                 rejected_count += 1
@@ -162,41 +141,40 @@ def generate_dataset(output_json: str, oversample: int = 15, temperature: float 
             
             question, correct_answer = batch_data_mapping[question_idx][0], batch_data_mapping[question_idx][1]
             
-            # Find the first generation with a correct answer
             found_correct = False
             
             for reasoning in generations_list:
-                # Validate reasoning is a string
                 if not isinstance(reasoning, str):
                     continue
                 
-                # Verify reasoning contains answer tags
                 if "<answer>" not in reasoning or "</answer>" not in reasoning:
                     continue
                 
                 parsed_answer = model.parse_answer(reasoning)
-                # Check for NaN
                 if parsed_answer != parsed_answer:
                     continue
                 
-                # Check if answer is valid
                 if is_answer_valid(parsed_answer, correct_answer):
                     records.append([question, correct_answer, reasoning])
                     found_correct = True
                     break
             
-            # If no correct answer found, ignore this data point (as per instructions)
             if not found_correct:
                 rejected_count += 1
         
-        # Clear CUDA cache periodically (every 4 batches) to reduce overhead
-        # A100 has plenty of memory, so we don't need to clear after every batch
         del all_generations
         if torch.cuda.is_available() and batch_idx % (batch_size * 4) == 0:
             torch.cuda.empty_cache()
 
     output_path = _resolve_output_path(output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if len(records) == 0:
+        raise ValueError(
+            f"No valid records generated! All {len(dataset)} questions were rejected. "
+            "This may indicate an issue with the model generation or answer parsing. "
+            "Check that the model is generating valid reasoning with <answer> tags."
+        )
 
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(records, handle, indent=2)

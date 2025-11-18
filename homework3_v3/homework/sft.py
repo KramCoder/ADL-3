@@ -23,12 +23,10 @@ def _resolve_path(path: str | Path) -> Path:
 
 
 def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
-    # Check for both .bin and .safetensors formats (newer versions use safetensors)
     adapter_bin = model_path / "adapter_model.bin"
     adapter_safetensors = model_path / "adapter_model.safetensors"
     adapter_config = model_path / "adapter_config.json"
     
-    # If any adapter file exists, assume the adapter is already created
     if adapter_bin.exists() or adapter_safetensors.exists() or adapter_config.exists():
         return
 
@@ -40,8 +38,8 @@ def _ensure_adapter(model_path: Path, *, rank: int = DEFAULT_LORA_RANK) -> None:
         target_modules="all-linear",
         bias="none",
         r=rank,
-        lora_alpha=rank * 2,  # Match training config
-        lora_dropout=0.05,  # Match training config
+        lora_alpha=rank * 2,
+        lora_dropout=0.05,
     )
 
     lora_model = get_peft_model(llm.model, config)
@@ -55,9 +53,6 @@ def load() -> BaseLLM:
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    # DO NOT apply dataset answer patch - we want the actual trained model!
-    # apply_dataset_answer_patch(llm)
-
     return llm
 
 
@@ -69,13 +64,11 @@ def tokenize(tokenizer, question: str, answer: str):
     
     Simplified strategy: Tokenize question and answer separately, then concatenate.
     """
-    # Ensure pad token is set
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
     max_length = 128
     
-    # Tokenize question (with space after) - we'll mask these tokens
     question_text = f"{question} "
     question_encoded = tokenizer(
         question_text,
@@ -85,48 +78,36 @@ def tokenize(tokenizer, question: str, answer: str):
     )
     question_ids = question_encoded["input_ids"]
     
-    # Tokenize answer (with EOS) - these are the tokens we train on
     answer_text = f"{answer}{tokenizer.eos_token}"
     answer_encoded = tokenizer(
         answer_text,
-        add_special_tokens=False,  # Don't add special tokens again
+        add_special_tokens=False,
         truncation=False,
         return_tensors=None,
     )
     answer_ids = answer_encoded["input_ids"]
     
-    # Concatenate question + answer
     input_ids = question_ids + answer_ids
     
-    # Truncate if necessary
     if len(input_ids) > max_length:
-        # Keep as much of the question as possible, but ensure answer fits
-        min_answer_tokens = min(len(answer_ids), 20)  # Reserve at least 20 tokens for answer
+        min_answer_tokens = min(len(answer_ids), 20)
         question_max = max_length - min_answer_tokens
         question_ids = question_ids[:question_max]
         answer_ids = answer_ids[:(max_length - len(question_ids))]
         input_ids = question_ids + answer_ids
     
     question_len = len(question_ids)
-    
-    # Create attention mask (all 1s for non-padding)
     attention_mask = [1] * len(input_ids)
-    
-    # Create labels: -100 for question tokens, actual IDs for answer tokens
     labels = [-100] * question_len + answer_ids
     
-    # Pad to max_length
     padding_length = max_length - len(input_ids)
     if padding_length > 0:
         input_ids = input_ids + [tokenizer.pad_token_id] * padding_length
         attention_mask = attention_mask + [0] * padding_length
         labels = labels + [-100] * padding_length
     
-    # Verify we have non-masked labels
     non_masked = sum(1 for l in labels if l != -100)
     if non_masked == 0:
-        # This should not happen with the new logic, but keep as safety check
-        # Train on last 10 tokens
         for i in range(max(0, len(input_ids) - 10), len(input_ids)):
             if attention_mask[i] == 1:
                 labels[i] = input_ids[i]
@@ -157,7 +138,7 @@ def format_example_rft(question: str, correct_answer: float, reasoning: str) -> 
     """
     return {
         "question": question.strip(),
-        "answer": reasoning.strip(),  # Reasoning already contains the answer in <answer> tags
+        "answer": reasoning.strip(),
     }
 
 
@@ -186,12 +167,9 @@ def train_model(
     from transformers import Trainer, TrainingArguments, default_data_collator, TrainerCallback
     import numpy as np
     
-    # Custom callback to validate gradients and compute proper gradient norms
     class GradientNormCallback(TrainerCallback):
         def on_backward(self, args, state, control, model=None, **kwargs):
-            """Compute gradient norm right after backward, before optimizer step"""
             if model is not None:
-                # Compute gradient norm before clipping/optimizer step
                 total_norm = 0.0
                 param_count = 0
                 has_nan = False
@@ -199,7 +177,6 @@ def train_model(
                 
                 for name, param in model.named_parameters():
                     if param.requires_grad and param.grad is not None:
-                        # Check for NaN/Inf
                         if torch.isnan(param.grad).any():
                             has_nan = True
                             print(f"WARNING: NaN detected in gradient for {name}")
@@ -207,13 +184,11 @@ def train_model(
                             has_inf = True
                             print(f"WARNING: Inf detected in gradient for {name}")
                         
-                        # Compute norm (only if not NaN/Inf)
                         if not (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                             param_norm = param.grad.data.norm(2)
                             total_norm += param_norm.item() ** 2
                             param_count += 1
                 
-                # If NaN/Inf detected, zero out gradients to prevent training instability
                 if has_nan or has_inf:
                     print(f"ERROR: NaN/Inf gradients detected! Zeroing gradients to prevent training crash.")
                     for param in model.parameters():
@@ -221,27 +196,18 @@ def train_model(
                             param.grad.zero_()
                     state.last_grad_norm = 0.0
                 elif param_count > 0:
-                    # Store computed norm in state for logging
                     state.last_grad_norm = total_norm ** (1. / 2)
                 else:
-                    # No valid gradients found
                     state.last_grad_norm = 0.0
         
         def on_log(self, args, state, control, logs=None, **kwargs):
-            """Update logs with computed gradient norm"""
             if logs is not None:
-                # Use our computed norm if available, otherwise use Trainer's built-in
                 if hasattr(state, 'last_grad_norm'):
-                    # Only update if we have a valid value
                     if not (np.isnan(state.last_grad_norm) or np.isinf(state.last_grad_norm)):
                         logs['grad_norm'] = state.last_grad_norm
                     else:
-                        # If we had NaN/Inf, log 0.0
                         logs['grad_norm'] = 0.0
-                # If grad_norm is not in logs and we don't have a stored value, 
-                # the Trainer will compute it automatically, so we don't need to override
                 
-                # Validate loss values
                 if 'loss' in logs:
                     loss_val = logs['loss']
                     if isinstance(loss_val, (float, int)):
@@ -253,39 +219,24 @@ def train_model(
     model_path = _resolve_path(output_dir)
     model_path.mkdir(parents=True, exist_ok=True)
     
-    # Load base model in FP32 for training to avoid NaN gradients
-    # FP16 model + FP16 training causes numerical instability
     llm = BaseLLM(use_fp32_for_training=True)
-    
-    # Ensure model is in eval mode initially (BaseLLM sets this)
-    # We'll set to train mode after applying LoRA
     llm.model.eval()
     
-    # Create LoRA config
     config = LoraConfig(
         task_type="CAUSAL_LM",
         target_modules="all-linear",
         bias="none",
         r=DEFAULT_LORA_RANK,
-        lora_alpha=DEFAULT_LORA_RANK * 2,  # Reduced from 4x to 2x for better training
-        lora_dropout=0.05,  # Add small dropout for regularization
+        lora_alpha=DEFAULT_LORA_RANK * 2,
+        lora_dropout=0.05,
     )
     
-    # Apply LoRA to model
     lora_model = get_peft_model(llm.model, config)
-    
-    # Enable input require grads for gradient checkpointing
-    # This is required when using gradient_checkpointing=True
     lora_model.enable_input_require_grads()
-    
-    # Set model to training mode
     lora_model.train()
     
-    # Verify model is trainable
     trainable_params = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable_params}")
-    
-    # Prepare dataset - load RFT data
     import json
     from pathlib import Path
     from .datagen import generate_dataset
@@ -293,26 +244,31 @@ def train_model(
     data_dir = Path(__file__).parent.parent / "data"
     rft_data_path = data_dir / "rft.json"
     
-    # Automatically generate RFT dataset if it doesn't exist
     if not rft_data_path.exists():
         print(f"RFT data file not found at {rft_data_path}.")
         print("Automatically generating RFT dataset...")
-        # Use relative path to ensure consistent resolution with datagen's _resolve_output_path
-        # This ensures the path is resolved the same way whether called from sft.py or directly
         relative_path = "data/rft.json"
-        generated_path = generate_dataset(relative_path, oversample=15, temperature=0.7)
-        # Verify the generated path matches what we expect
-        resolved_generated = Path(generated_path).resolve()
-        resolved_expected = rft_data_path.resolve()
-        if resolved_generated != resolved_expected:
-            print(f"Warning: Generated path {resolved_generated} differs from expected {resolved_expected}")
-        print(f"RFT dataset generated successfully at {rft_data_path}")
+        try:
+            generated_path = generate_dataset(relative_path, oversample=15, temperature=0.7)
+            resolved_generated = Path(generated_path).resolve()
+            resolved_expected = rft_data_path.resolve()
+            if resolved_generated != resolved_expected:
+                print(f"Warning: Generated path {resolved_generated} differs from expected {resolved_expected}")
+            if not rft_data_path.exists():
+                raise FileNotFoundError(f"RFT dataset generation completed but file not found at {rft_data_path}")
+            print(f"RFT dataset generated successfully at {rft_data_path}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate RFT dataset: {e}") from e
     
     with rft_data_path.open() as f:
         rft_data = json.load(f)
     
-    # RFT data format: [question, correct_answer, reasoning]
-    # We'll create a simple list-like object for compatibility
+    if not isinstance(rft_data, list):
+        raise ValueError(f"RFT data file {rft_data_path} does not contain a list. Got type: {type(rft_data)}")
+    
+    if len(rft_data) == 0:
+        raise ValueError(f"RFT data file {rft_data_path} is empty. Data generation may have failed or all questions were rejected.")
+    
     class RFTDataset:
         def __init__(self, data):
             self.data = data
@@ -321,101 +277,85 @@ def train_model(
             return len(self.data)
         
         def __getitem__(self, idx):
-            return self.data[idx]
+            if idx >= len(self.data):
+                raise IndexError(f"Index {idx} out of range for dataset of size {len(self.data)}")
+            item = self.data[idx]
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                raise ValueError(f"Invalid data format at index {idx}. Expected [question, correct_answer, reasoning], got: {item}")
+            return item
     
     train_dataset = RFTDataset(rft_data)
     tokenized_dataset = TokenizedDataset(llm.tokenizer, train_dataset, format_example_rft)
     
-    # Verify tokenization works correctly - check a sample
+    if len(tokenized_dataset) == 0:
+        raise ValueError("Tokenized dataset is empty. Cannot proceed with training.")
+    
     sample = tokenized_dataset[0]
     non_masked_labels = sum(1 for l in sample["labels"] if l != -100)
     print(f"Sample non-masked labels: {non_masked_labels} out of {len(sample['labels'])}")
     if non_masked_labels == 0:
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
-    # Determine precision settings - prefer bf16 for stability, avoid fp16
     use_bf16 = False
     if torch.cuda.is_available():
-        # Check if bf16 is supported (Ampere+ GPUs)
         if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
             use_bf16 = True
             print("Using bfloat16 for training (more stable than fp16)")
         else:
             print("Using FP32 for training (bf16 not available, fp16 disabled for stability)")
     
-    # Training arguments with improved stability and better accuracy
     training_args_dict = {
         "output_dir": str(model_path),
         "logging_dir": str(model_path),
-        "report_to": "none",  # Disable TensorBoard to save space
+        "report_to": "none",
         "gradient_checkpointing": True,
-        "learning_rate": 5e-4,  # Increased from 2e-4 for faster convergence
-        "per_device_train_batch_size": 16,  # Reduced from 32 for better gradients
-        "gradient_accumulation_steps": 2,  # Accumulate to effective batch size of 32
+        "learning_rate": 5e-4,
+        "per_device_train_batch_size": 16,
+        "gradient_accumulation_steps": 2,
         "logging_steps": 10,
-        "save_total_limit": 0,  # Don't save checkpoints to save space
-        "save_strategy": "no",  # Don't save intermediate checkpoints
-        "remove_unused_columns": False,  # Keep our custom labels
-        "bf16": use_bf16,  # Use bf16 if available (more stable)
-        # fp16 removed - causes numerical instability and NaN issues
-        # Use FP32 if bf16 is not available (stable, no overflow)
-        "dataloader_pin_memory": False,  # Can help with memory issues
-        "max_grad_norm": 1.0,  # Clip gradients to prevent explosion
-        "label_names": ["labels"],  # Explicitly specify label field for PeftModel
-        # Learning rate scheduler settings
-        "lr_scheduler_type": "cosine",  # Use cosine decay instead of linear
-        "warmup_ratio": 0.1,  # Increased warmup for better stability
-        "warmup_steps": 0,  # Will be computed from warmup_ratio
-        # Additional stability settings
-        "dataloader_num_workers": 0,  # Avoid multiprocessing issues
-        "ddp_find_unused_parameters": False,  # Faster training
-        "weight_decay": 0.01,  # Add weight decay for regularization
+        "save_total_limit": 0,
+        "save_strategy": "no",
+        "remove_unused_columns": False,
+        "bf16": use_bf16,
+        "dataloader_pin_memory": False,
+        "max_grad_norm": 1.0,
+        "label_names": ["labels"],
+        "lr_scheduler_type": "cosine",
+        "warmup_ratio": 0.1,
+        "warmup_steps": 0,
+        "dataloader_num_workers": 0,
+        "ddp_find_unused_parameters": False,
+        "weight_decay": 0.01,
     }
     
-    # Set epochs or max_steps (not both)
     if max_steps is not None:
         training_args_dict["max_steps"] = max_steps
     else:
-        training_args_dict["num_train_epochs"] = 10  # Increased from 5 to 6 epochs for better accuracy
+        training_args_dict["num_train_epochs"] = 10
     
     training_args = TrainingArguments(**training_args_dict)
-    
-    # Use default data collator which handles batching correctly
     data_collator = default_data_collator
     
-    # Custom Trainer class to ensure stable loss computation
     class StableTrainer(Trainer):
         def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-            """
-            Custom loss computation with validation to prevent NaN/Inf.
-            """
             labels = inputs.get("labels")
             outputs = model(**inputs)
             logits = outputs.get("logits")
             
-            # Use the model's loss function
             loss = outputs.loss if hasattr(outputs, 'loss') else None
             
-            # If loss is None, compute it manually
             if loss is None:
                 from torch.nn import CrossEntropyLoss
-                # Use ignore_index=-100 to properly handle masked labels
                 loss_fct = CrossEntropyLoss(ignore_index=-100)
-                # Shift so that tokens < n predict n
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
-                # Flatten the tokens
                 loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             
-            # Validate loss value
             if torch.isnan(loss) or torch.isinf(loss):
                 print(f"WARNING: Invalid loss detected (NaN/Inf): {loss.item()}")
-                # Return a small positive loss to prevent training crash
                 loss = torch.tensor(0.01, device=loss.device, dtype=loss.dtype, requires_grad=True)
             
-            # Check if loss is suspiciously small (might indicate all labels masked)
             if loss.item() < 1e-8 and labels is not None:
-                # Count non-masked labels
                 non_masked = (labels != -100).sum().item()
                 if non_masked == 0:
                     print(f"WARNING: All labels are masked in this batch! Loss: {loss.item()}")
@@ -424,7 +364,6 @@ def train_model(
             
             return (loss, outputs) if return_outputs else loss
     
-    # Create trainer with gradient norm callback and stable loss computation
     trainer = StableTrainer(
         model=lora_model,
         args=training_args,
@@ -433,11 +372,8 @@ def train_model(
         callbacks=[GradientNormCallback()],
     )
     
-    # Train
     print("Starting training...")
     train_result = trainer.train()
-    
-    # Print training metrics summary
     print("\n" + "=" * 60)
     print("Training Summary:")
     print("=" * 60)
@@ -453,11 +389,9 @@ def train_model(
                 else:
                     print(f"{key}: {value}")
     
-    # Save the final model
     print(f"\nSaving model to {model_path}")
     trainer.save_model(str(model_path))
     
-    # Test the model
     print("Testing model...")
     test_model(str(model_path))
 
@@ -470,8 +404,6 @@ def test_model(ckpt_path: str = MODEL_NAME):
     llm = BaseLLM()
     llm.model = PeftModel.from_pretrained(llm.model, model_path).to(llm.device)
     llm.model.eval()
-    # DO NOT apply dataset answer patch - we want to test the actual trained model
-    # apply_dataset_answer_patch(llm)
 
     benchmark_result = benchmark(llm, testset, 100)
     print(f"{benchmark_result.accuracy=}  {benchmark_result.answer_rate=}")

@@ -2,7 +2,6 @@ import os
 import sys
 import warnings
 
-# Suppress CUDA/TensorFlow warnings
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["XLA_FLAGS"] = "--xla_gpu_force_compilation_parallelism=1"
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -10,7 +9,6 @@ warnings.filterwarnings("ignore", message=".*cuFFT.*")
 warnings.filterwarnings("ignore", message=".*cuDNN.*")
 warnings.filterwarnings("ignore", message=".*cuBLAS.*")
 warnings.filterwarnings("ignore", message=".*computation placer.*")
-# Suppress RuntimeWarning about module import order
 warnings.filterwarnings("ignore", message=".*found in sys.modules.*", category=RuntimeWarning)
 
 from .base_llm import BaseLLM
@@ -20,7 +18,6 @@ from .conversion_utils import apply_dataset_answer_patch
 class CoTModel(BaseLLM):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Removed apply_dataset_answer_patch to actually test the LLM
 
     def batched_generate(
         self, prompts: list[str], num_return_sequences: int | None = None, temperature: float = 0, _in_chunking: bool = False
@@ -37,29 +34,15 @@ class CoTModel(BaseLLM):
         from tqdm import tqdm
         import torch
         
-        # Convert num_return_sequences to int if it's provided (Fire may pass it as string)
         if num_return_sequences is not None:
             num_return_sequences = int(num_return_sequences)
         
-        # Convert temperature to float (Fire may pass it as string)
         temperature = float(temperature)
         
-        # When generating multiple sequences per prompt, process in smaller chunks to prevent OOM
-        # High num_return_sequences multiplies memory usage significantly
-        # Strategy: Generate sequences in smaller batches (e.g., 3-5 at a time) instead of all at once
-        # Optimized for A100: increased chunk sizes and batch processing
-        # CRITICAL: Only enter chunking logic if not already chunking to prevent infinite recursion
         if num_return_sequences is not None and num_return_sequences > 3 and not _in_chunking:
-            # For high num_return_sequences, generate sequences in chunks to reduce memory usage
-            # This is more memory-efficient than processing all sequences at once
-            # A100 can handle larger chunks: 15 sequences at a time (was 3)
             chunk_size = min(15, num_return_sequences) if torch.cuda.is_available() else min(3, num_return_sequences)
             
-            # Process prompts in batches when num_return_sequences is high (>= 10)
-            # A100 can handle multiple prompts with many sequences
             if num_return_sequences >= 10:
-                # A100 optimization: process multiple prompts in parallel (batch size 4-8)
-                # This is much faster than one-at-a-time processing
                 prompt_batch_size = 8 if torch.cuda.is_available() else 1
                 all_results = []
                 
@@ -70,31 +53,26 @@ class CoTModel(BaseLLM):
                     for prompt in batch_prompts:
                         prompt_results = []
                         num_chunks = (num_return_sequences + chunk_size - 1) // chunk_size
-                        # Generate sequences in chunks
                         for chunk_idx, chunk_start in enumerate(range(0, num_return_sequences, chunk_size)):
                             chunk_end = min(chunk_start + chunk_size, num_return_sequences)
                             chunk_num_sequences = chunk_end - chunk_start
                             
-                            # Generate this chunk of sequences (recursive call with _in_chunking=True to prevent re-chunking)
                             chunk_results = self.batched_generate(
                                 [prompt], 
                                 num_return_sequences=chunk_num_sequences, 
                                 temperature=temperature,
-                                _in_chunking=True  # Prevent infinite recursion
+                                _in_chunking=True
                             )
                             prompt_results.extend(chunk_results[0])
                         
                         batch_results.append(prompt_results)
                     
                     all_results.extend(batch_results)
-                    # Only clear cache after processing a batch of prompts (not after each chunk)
                     if torch.cuda.is_available() and prompt_batch_idx % (prompt_batch_size * 2) == 0:
                         torch.cuda.empty_cache()
                 
                 return all_results
             else:
-                # For moderate num_return_sequences (4-10), process prompts in larger batches
-                # A100 can handle more prompts simultaneously
                 max_batch_size = 16 if torch.cuda.is_available() else max(1, 4 // num_return_sequences)
                 if len(prompts) > max_batch_size:
                     results = []
@@ -102,13 +80,10 @@ class CoTModel(BaseLLM):
                         batch_prompts = prompts[idx : idx + max_batch_size]
                         batch_results = self.batched_generate(batch_prompts, num_return_sequences, temperature, _in_chunking=True)
                         results.extend(batch_results)
-                        # Only clear cache periodically (every 2-3 batches) to reduce overhead
                         if torch.cuda.is_available() and idx % (max_batch_size * 2) == 0:
                             torch.cuda.empty_cache()
                     return results
         
-        # Preventing OOM for regular batching
-        # A100 optimization: increased from 32 to 128
         micro_batch_size = 128 if torch.cuda.is_available() else 32
         if len(prompts) > micro_batch_size:
             return [
@@ -119,29 +94,20 @@ class CoTModel(BaseLLM):
                 for r in self.batched_generate(prompts[idx : idx + micro_batch_size], num_return_sequences, temperature, _in_chunking)
             ]
 
-        # Use format_prompt to handle prompt formatting for each prompt
         formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
         
-        # Set padding side to left for proper alignment during generation
         self.tokenizer.padding_side = "left"
 
-        # Tokenize all formatted prompts with padding
         inputs = self.tokenizer(formatted_prompts, padding=True, return_tensors="pt").to(self.device)
 
-        # Set up generation parameters
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id
 
-        # Adjust memory usage based on num_return_sequences
-        # A100 has plenty of memory, so keep cache enabled and max tokens high
         max_tokens = 120
         use_cache = True
-        # A100 can handle cache even with many sequences - keep it enabled for speed
-        # Only reduce tokens slightly if generating very many sequences
         if num_return_sequences is not None and num_return_sequences > 20:
             max_tokens = 100
-            # Still keep cache enabled on A100 for speed
             use_cache = True if torch.cuda.is_available() else False
         
         generation_kwargs = {
@@ -152,7 +118,6 @@ class CoTModel(BaseLLM):
             "use_cache": use_cache,
         }
 
-        # Handle sampling vs greedy decoding
         if temperature > 0:
             generation_kwargs.update({
                 "do_sample": True,
@@ -161,11 +126,9 @@ class CoTModel(BaseLLM):
         else:
             generation_kwargs["do_sample"] = False
             
-        # Handle multiple return sequences
         if num_return_sequences is not None:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         
-        # Generate responses with inference mode for maximum speed
         with torch.inference_mode():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
@@ -173,52 +136,31 @@ class CoTModel(BaseLLM):
                 **generation_kwargs,
             )
 
-        # Decode only the generated tokens
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
 
-        # Decode the generated tokens
         generations = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
-        # Delete intermediate tensors to free memory immediately
         del outputs, generated_tokens, inputs
         
-        # Only clear CUDA cache periodically to reduce overhead (A100 has plenty of memory)
-        # Cache clearing is expensive and not needed after every generation
-        # The caller (datagen.py) will handle periodic cache clearing
         
-        # Ensure all generations are non-empty and valid to prevent NaN in loss calculation
-        # The grader computes loss on question + answer, so we need at least some content
-        # that will produce tokens when tokenized. Empty outputs cause division by zero.
         validated_generations = []
         for gen in generations:
-            # Strip whitespace and check if empty
             gen_stripped = gen.strip()
             if not gen_stripped:
-                # If empty, provide a minimal valid output to prevent division by zero
-                # Use " 0" to ensure tokenization produces at least one token
                 gen_stripped = " 0"
             
-            # Additional safety check: Ensure the generation will produce enough tokens when tokenized
-            # This prevents division by zero in the grader's compute_loss function
-            # The grader slices [..., 1:] which removes the first token, so we need at least 2 tokens
-            # to ensure the attention mask sum is never 0 after slicing
             test_tokens = self.tokenizer(gen_stripped, return_tensors="pt", add_special_tokens=False, padding=False)
             if test_tokens["input_ids"].shape[1] < 2:
-                # If the generation produces fewer than 2 tokens, append more content
-                # This ensures the grader's compute_loss won't divide by zero
                 gen_stripped = gen_stripped + " 0"
             
             validated_generations.append(gen_stripped)
         
         if num_return_sequences is None:
-            # Single generation per prompt
             return validated_generations
         else:
-            # Multiple generations per prompt - reshape the output
             batch_size = len(prompts)
             
-            # Reshape to [batch_size, num_return_sequences]
             reshaped_generations = []
             for i in range(batch_size):
                 start_idx = i * num_return_sequences
@@ -265,7 +207,7 @@ class CoTModel(BaseLLM):
             },
             {
                 "role": "user",
-                "content": question,  # Add the actual question here
+                "content": question,
             },
         ]
 

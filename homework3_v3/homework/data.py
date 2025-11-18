@@ -20,26 +20,18 @@ class Dataset:
 
 
 def is_answer_valid(answer: float, correct_answer: float, relative_tolerance: float = 0.05) -> bool:
-    # Handle NaN and Inf values - they are never valid answers
-    # Check if answer is NaN (NaN != NaN is True)
     if answer != answer or abs(answer) == float('inf'):
         return False
-    # Check if correct_answer is NaN or Inf (shouldn't happen, but be defensive)
     if correct_answer != correct_answer or abs(correct_answer) == float('inf'):
         return False
     
-    # Round both values for comparison
     rounded_answer = round(answer, 3)
     rounded_correct = round(correct_answer, 3)
     diff = abs(rounded_answer - rounded_correct)
     
-    # For zero or very small correct answers, use absolute tolerance instead of relative
-    # This prevents division by zero and allows reasonable tolerance for zero values
-    if abs(rounded_correct) < 1e-6:  # Essentially zero
-        # Use absolute tolerance of 0.001 (1e-3) for zero values
+    if abs(rounded_correct) < 1e-6:
         return diff < 0.001
     else:
-        # Use relative tolerance for non-zero values
         return diff < relative_tolerance * abs(rounded_correct)
 
 
@@ -53,7 +45,7 @@ class BenchmarkResult:
         is_correct: bool
 
     accuracy: float
-    answer_rate: float  # How often was the answer not NaN
+    answer_rate: float
     samples: list[Sample]
 
     @classmethod
@@ -65,8 +57,6 @@ class BenchmarkResult:
             for item, answer in zip(dataset, answers[:max_question])
         ]
         n = min(len(dataset), max_question)
-        # Prevent division by zero - return 0.0 for accuracy and answer_rate if n is 0
-        # This ensures the grader never receives NaN values
         if n == 0:
             return cls(
                 accuracy=0.0,
@@ -74,15 +64,12 @@ class BenchmarkResult:
                 samples=samples,
             )
         
-        # Calculate accuracy and answer_rate with defensive checks to prevent NaN
         accuracy = sum(sample.is_correct for sample in samples) / n
         answer_rate = sum(sample.answer == sample.answer for sample in samples) / n
         
-        # Defensive check: Ensure accuracy and answer_rate are never NaN or Inf
-        # The grader's normalize_score function cannot handle NaN values
-        if accuracy != accuracy or abs(accuracy) == float('inf'):  # NaN or Inf check
+        if accuracy != accuracy or abs(accuracy) == float('inf'):
             accuracy = 0.0
-        if answer_rate != answer_rate or abs(answer_rate) == float('inf'):  # NaN or Inf check
+        if answer_rate != answer_rate or abs(answer_rate) == float('inf'):
             answer_rate = 0.0
         
         return cls(

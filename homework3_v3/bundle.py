@@ -11,7 +11,7 @@ BLACKLIST = [
     "training_args.bin", "trainer_state.json",  # Exclude training state
     "sft_output",  # Exclude intermediate training output directory
 ]
-MAXSIZE_MB = 40
+MAXSIZE_MB = 50
 
 
 def bundle(homework_dir: str, utid: str):
@@ -21,17 +21,19 @@ def bundle(homework_dir: str, utid: str):
     homework_dir = Path(homework_dir).resolve()
     output_path = Path(__file__).parent / f"{utid}.zip"
 
-    # Get the files from the homework directory
+    # Get the files from the homework directory (only files, not directories)
     files = []
 
     for f in homework_dir.rglob("*"):
-        if all(b not in str(f) for b in BLACKLIST):
+        # Only include files (not directories) and check blacklist
+        if f.is_file() and all(b not in str(f) for b in BLACKLIST):
             files.append(f)
 
     print("\n".join(str(f.relative_to(homework_dir)) for f in files))
 
     # Zip all files, keeping the directory structure
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # Use ZIP_DEFLATED with compresslevel=9 for maximum compression
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for f in files:
             zf.write(f, homework_dir.stem / f.relative_to(homework_dir))
 

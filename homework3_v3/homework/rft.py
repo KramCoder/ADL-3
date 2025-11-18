@@ -177,9 +177,9 @@ def train_model(
         num_train_epochs=3,
         per_device_train_batch_size=16,
         gradient_accumulation_steps=2,
-        save_strategy="epoch",
+        save_strategy="no",  # Don't save checkpoints during training
         logging_steps=10,
-        save_total_limit=1,
+        save_total_limit=0,  # No checkpoint saving
         bf16=use_bf16,
         dataloader_pin_memory=False,
         max_grad_norm=1.0,
@@ -218,7 +218,22 @@ def train_model(
                     print(f"{key}: {value}")
     
     print(f"\nSaving model to {model_path}")
-    trainer.save_model()
+    # Explicitly save to the model_path directory (not a checkpoint subdirectory)
+    trainer.save_model(str(model_path))
+    
+    # Verify the model files exist
+    adapter_files = [
+        model_path / "adapter_model.bin",
+        model_path / "adapter_model.safetensors",
+        model_path / "adapter_config.json",
+    ]
+    existing_files = [f for f in adapter_files if f.exists()]
+    if not existing_files:
+        raise RuntimeError(
+            f"Model files were not saved correctly to {model_path}. "
+            f"Expected adapter_model.bin/safetensors and adapter_config.json"
+        )
+    print(f"Model saved successfully. Found files: {[f.name for f in existing_files]}")
     
     print("Testing model...")
     test_model(str(model_path))

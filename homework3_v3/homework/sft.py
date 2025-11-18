@@ -12,7 +12,7 @@ from .data import Dataset, benchmark
 
 
 MODEL_NAME = "sft_model"
-DEFAULT_LORA_RANK = 16
+DEFAULT_LORA_RANK = 8  # Reduced from 16 to keep submission under 50MB
 
 
 def _resolve_path(path: str | Path) -> Path:

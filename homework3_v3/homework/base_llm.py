@@ -244,7 +244,9 @@ class BaseLLM:
         # Preventing OOM
         # Depending on your GPU batched generation will use a lot of memory.
         # If you run out of memory, try to reduce the micro_batch_size.
-        micro_batch_size = 32
+        # A100 GPU optimization: Increased from 32 to 256 for better throughput
+        # A100 has 40-80GB VRAM, can handle much larger batches
+        micro_batch_size = int(os.environ.get("MICRO_BATCH_SIZE", "256"))
         if len(prompts) > micro_batch_size:
             return [
                 r

@@ -44,11 +44,12 @@ class CoTModel(BaseLLM):
         if num_return_sequences is not None and num_return_sequences > 3:
             # For high num_return_sequences, generate sequences in chunks to reduce memory usage
             # This is more memory-efficient than processing all sequences at once
-            chunk_size = min(3, num_return_sequences)  # Generate 3 sequences at a time max
+            # A100 optimization: Increased chunk size from 3 to 10 for better throughput
+            chunk_size = int(os.environ.get("CHUNK_SIZE", "10"))  # Generate 10 sequences at a time on A100
             
-            # Process prompts one at a time when num_return_sequences is high (>= 10)
-            # This prevents OOM when generating many sequences
-            if num_return_sequences >= 10:
+            # Process prompts one at a time when num_return_sequences is very high (>= 20)
+            # A100 can handle much more before OOM
+            if num_return_sequences >= 20:
                 all_results = []
                 for prompt_idx, prompt in enumerate(prompts):
                     prompt_results = []
@@ -95,7 +96,8 @@ class CoTModel(BaseLLM):
                     return results
         
         # Preventing OOM for regular batching
-        micro_batch_size = 32
+        # A100 GPU optimization: Increased from 32 to 256 for better throughput
+        micro_batch_size = int(os.environ.get("MICRO_BATCH_SIZE", "256"))
         if len(prompts) > micro_batch_size:
             return [
                 r

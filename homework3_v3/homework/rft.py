@@ -180,7 +180,12 @@ def train_model(
         else:
             print("Using FP32 for training (bf16 not available, fp16 disabled for stability)")
     
-    # Optimized training arguments for faster training
+    # A100-optimized training arguments for maximum throughput
+    # A100 has 40-80GB VRAM, can handle much larger batches
+    import os
+    a100_batch_size = int(os.environ.get("A100_BATCH_SIZE", "32"))  # Doubled from 16
+    a100_grad_accum = int(os.environ.get("A100_GRAD_ACCUM", "1"))   # Reduced from 2 since batch is larger
+    
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
@@ -188,8 +193,8 @@ def train_model(
         gradient_checkpointing=True,  # Reduces memory, enables larger batches
         learning_rate=5e-4,  # Increased from 2e-4 for faster convergence
         num_train_epochs=3,
-        per_device_train_batch_size=16,  # Reduced from 32 to allow gradient accumulation
-        gradient_accumulation_steps=2,  # Effective batch size = 16 * 2 = 32
+        per_device_train_batch_size=a100_batch_size,  # A100: Increased from 16 to 32+
+        gradient_accumulation_steps=a100_grad_accum,  # A100: Effective batch size = 32 * 1 = 32
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,

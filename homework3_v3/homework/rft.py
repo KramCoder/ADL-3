@@ -171,38 +171,57 @@ def train_model(
         raise ValueError("All labels are masked! Tokenization is incorrect.")
     
     # Determine precision settings - prefer bf16 for speed, avoid fp16
+    # A100 supports BF16 natively and it's much faster than FP32
     use_bf16 = False
+    is_a100 = False
     if torch.cuda.is_available():
-        # Check if bf16 is supported (Ampere+ GPUs)
+        gpu_name = torch.cuda.get_device_name(0).lower()
+        is_a100 = "a100" in gpu_name
+        # Check if bf16 is supported (Ampere+ GPUs like A100)
         if hasattr(torch.cuda, 'is_bf16_supported') and torch.cuda.is_bf16_supported():
             use_bf16 = True
-            print("Using bfloat16 for training (faster than FP32, more stable than FP16)")
+            if is_a100:
+                print(f"Detected A100 GPU: {torch.cuda.get_device_name(0)}")
+                print("Using bfloat16 for training (optimal for A100 - 2-3x faster than FP32)")
+            else:
+                print("Using bfloat16 for training (faster than FP32, more stable than FP16)")
         else:
             print("Using FP32 for training (bf16 not available, fp16 disabled for stability)")
     
     # Optimized training arguments for faster training
+    # A100 can handle much larger batches and benefits from aggressive settings
+    if is_a100:
+        per_device_batch_size = 32  # A100 can handle larger batches (was 16)
+        gradient_accumulation = 2  # Effective batch size = 32 * 2 = 64
+        learning_rate = 6e-4  # Slightly higher LR for larger effective batch size
+        print(f"A100 optimizations: batch_size={per_device_batch_size}, effective_batch={per_device_batch_size * gradient_accumulation}")
+    else:
+        per_device_batch_size = 16  # Conservative for smaller GPUs
+        gradient_accumulation = 2  # Effective batch size = 16 * 2 = 32
+        learning_rate = 5e-4  # Increased from 2e-4 for faster convergence
+    
     training_args = TrainingArguments(
         output_dir=str(model_path),
         logging_dir=str(model_path),
         report_to="none",  # Disable TensorBoard to save space and time
         gradient_checkpointing=True,  # Reduces memory, enables larger batches
-        learning_rate=5e-4,  # Increased from 2e-4 for faster convergence
+        learning_rate=learning_rate,
         num_train_epochs=3,
-        per_device_train_batch_size=16,  # Reduced from 32 to allow gradient accumulation
-        gradient_accumulation_steps=2,  # Effective batch size = 16 * 2 = 32
+        per_device_train_batch_size=per_device_batch_size,
+        gradient_accumulation_steps=gradient_accumulation,
         save_strategy="epoch",
         logging_steps=10,
         save_total_limit=1,
         bf16=use_bf16,  # Use bf16 if available (faster than FP32)
         # fp16 removed - causes numerical instability
-        dataloader_pin_memory=False,  # Can help with memory issues
+        dataloader_pin_memory=True if is_a100 else False,  # Enable pin memory on A100 for speed
         max_grad_norm=1.0,  # Clip gradients to prevent explosion
         label_names=["labels"],  # Explicitly specify label field for PeftModel
         # Learning rate scheduler settings
         lr_scheduler_type="cosine",  # Use cosine decay instead of linear
         warmup_ratio=0.1,  # Warmup for better stability
         # Additional optimizations
-        dataloader_num_workers=0,  # Avoid multiprocessing issues
+        dataloader_num_workers=4 if is_a100 else 0,  # Use workers on A100 for faster data loading
         ddp_find_unused_parameters=False,  # Faster training
         weight_decay=0.01,  # Add weight decay for regularization
         remove_unused_columns=False,  # Keep our custom labels

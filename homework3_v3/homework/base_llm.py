@@ -42,10 +42,21 @@ class BaseLLM:
             # FP16 can cause numerical instability in cross-entropy loss computation
             # Large logits in FP16 can overflow to Inf, causing NaN in loss
             # Set environment variable USE_FP16_INFERENCE=1 to enable FP16 for speed (not recommended for grading)
+            # A100 supports BF16 which is more stable than FP16
             import os
             use_fp16 = os.environ.get("USE_FP16_INFERENCE", "0").lower() in ("1", "true", "yes")
+            
+            # Detect A100 and use BF16 for faster inference (more stable than FP16)
+            is_a100 = False
+            if device == "cuda" and torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0).lower()
+                is_a100 = "a100" in gpu_name
+            
             if use_fp16 and device == "cuda":
                 load_kwargs = {"torch_dtype": torch.float16}
+            elif is_a100 and device == "cuda":
+                # Use BF16 on A100 for faster inference (2x faster than FP32, more stable than FP16)
+                load_kwargs = {"torch_dtype": torch.bfloat16}
             else:
                 # Default to FP32 for numerical stability
                 load_kwargs = {"torch_dtype": torch.float32}

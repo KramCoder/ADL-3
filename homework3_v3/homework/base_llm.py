@@ -28,16 +28,22 @@ class BaseLLM:
     def __init__(self, checkpoint=checkpoint, use_fp32_for_training=False):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         
-        # Load model with optimizations
-        # Use FP32 for training to avoid numerical instability, FP16 for inference
+        # Load model with numerical stability in mind
+        # FP16 can cause NaN in grader's loss computation, so we use BF16 (more stable) or FP32
+        # BF16 has same exponent range as FP32 but less mantissa precision, avoiding overflow/underflow
         if use_fp32_for_training:
             load_kwargs = {"torch_dtype": torch.float32}
+        elif device == "cuda" and hasattr(torch, 'bfloat16') and torch.cuda.is_bf16_supported():
+            # Use BF16 if available - more numerically stable than FP16
+            load_kwargs = {"torch_dtype": torch.bfloat16}
         else:
-            load_kwargs = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+            # Fall back to FP32 to ensure numerical stability and prevent NaN
+            load_kwargs = {"torch_dtype": torch.float32}
         
-        if device == "cuda" and not use_fp32_for_training:
-            # Use memory-efficient attention if available (skip for FP32 training)
-            load_kwargs["attn_implementation"] = "sdpa"  # Scaled Dot Product Attention
+        # Use memory-efficient attention if available
+        # SDPA (Scaled Dot Product Attention) is more efficient and numerically stable
+        if device == "cuda":
+            load_kwargs["attn_implementation"] = "sdpa"
         
         try:
             self.model = AutoModelForCausalLM.from_pretrained(checkpoint, **load_kwargs).to(device)
